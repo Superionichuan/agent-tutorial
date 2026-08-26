@@ -26,3 +26,6 @@ mini_agent = "mini_agent.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["mini_agent*"]
+
+[tool.setuptools.package-data]
+mini_agent = ["prompts/*.md", "**/*.md"]

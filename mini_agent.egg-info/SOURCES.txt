@@ -1,5 +1,6 @@
 README.md
 pyproject.toml
+mini_agent/README.md
 mini_agent/__init__.py
 mini_agent/__main__.py
 mini_agent/session.py
@@ -42,6 +43,9 @@ mini_agent/llm/backends/ollama.py
 mini_agent/llm/backends/qwen.py
 mini_agent/mem/__init__.py
 mini_agent/mem/memory.py
+mini_agent/prompts/README.md
+mini_agent/prompts/agent.md
+mini_agent/prompts/coding.md
 mini_agent/skills/__init__.py
 mini_agent/skills/loader.py
 mini_agent/tools/__init__.py
