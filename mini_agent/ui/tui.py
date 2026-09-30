@@ -399,7 +399,9 @@ class MiniAgentApp(App):
                 self._append(c)
             elif t == "tool/result":
                 c = cards.pop(d["call_id"], None)
-                if c: c.set_result(d["content"], d.get("is_error", False))
+                if c is None:  # invalid reply: no tool call preceded this result
+                    c = ToolCard("(invalid reply)", {}); self._append(c)
+                c.set_result(d["content"], d.get("is_error", False))
             elif t == "todo/write":
                 self._append(TodoCard(d["todos"]))
             elif t == "plan/mode":
@@ -512,8 +514,10 @@ class MiniAgentApp(App):
             self._append(card)
         elif type == "tool/result":
             card = self._cards.pop(d["call_id"], None)
-            if card:
-                card.set_result(d["content"], d["is_error"])
+            if card is None:  # invalid reply: no tool call preceded this result
+                card = ToolCard("(invalid reply)", {})
+                self._append(card)
+            card.set_result(d["content"], d["is_error"])
         elif type == "todo/write":
             self._append(TodoCard(d["todos"]))
         elif type == "turn/end":

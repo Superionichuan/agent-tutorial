@@ -23,7 +23,7 @@ class Memory:
         return self.mem_dir / f"{today}.md"
 
     def get_long_term(self, budget_chars: int = 3000) -> str:
-        """Read long-term memory (with injection budget: keep head + recent tail when over budget)."""
+        """Read long-term memory (with an insertion budget: keep head + recent tail when over budget)."""
         if not self.long_term_file.exists():
             return ""
         text = self.long_term_file.read_text()

@@ -4,6 +4,7 @@ from .file import read_file, write_file, list_dir
 from .shell import bash, run_python
 from .memory import remember, log
 from .todo import todo_write
+from .skill import read_skill
 
 TOOLS = {
     "calc": calc,
@@ -15,6 +16,7 @@ TOOLS = {
     "remember": remember,
     "todo_write": todo_write,
     "log": log,
+    "read_skill": read_skill,  # described in the skills section, not in TOOL_DESC
 }
 
 TOOL_DESC = """

@@ -25,7 +25,8 @@ class Agent:
         max_steps: int = 100,
         skills: Optional[List[str]] = None,  # None = all, [] = none
         use_memory: bool = True,
-        prompt_name: str = "agent"  # prompts/<name>.md (e.g. "coding")
+        prompt_name: str = "agent",  # prompts/<name>.md (e.g. "coding")
+        approve: Optional[Callable[[str, dict], bool]] = None,  # policy check per tool call
     ):
         self.llm = llm or create_llm()  # auto-load config from .env
 
@@ -46,6 +47,7 @@ class Agent:
         self.prompt_name = prompt_name
         self.use_memory = use_memory
         self.memory = Memory() if use_memory else None
+        self.approve = approve
 
     def _load_skills(self):
         """Load skills"""
@@ -100,7 +102,8 @@ class Agent:
             memory_prompt=self._get_memory_prompt(),
             on_event=on_event,
             conversation=conversation,
-            prompt_name=self.prompt_name
+            prompt_name=self.prompt_name,
+            approve=self.approve
         )
 
     def log(self, content: str):

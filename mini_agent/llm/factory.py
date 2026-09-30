@@ -1,10 +1,11 @@
-"""LLM factory — create an LLM instance from config"""
+"""LLM factory: create an LLM instance from config"""
 import os
 from pathlib import Path
 from typing import Optional
 
 from .base import BaseLLM
 from .backends import OllamaLLM, QwenLLM, DeepSeekLLM, ClaudeLLM
+from .offline import OfflineLLM, RecordingLLM
 
 
 def load_config(env_file: Optional[Path] = None) -> dict:
@@ -29,7 +30,7 @@ def load_config(env_file: Optional[Path] = None) -> dict:
                     config[key.strip()] = value.strip().strip('"').strip("'")
 
     # environment variables take precedence
-    for key in ["LLM_BACKEND", "LLM_MODEL", "LLM_STREAM",
+    for key in ["LLM_BACKEND", "LLM_MODEL", "LLM_STREAM", "LLM_RECORD", "LLM_RECORDING",
                 "QWEN_API_KEY", "QWEN_REGION", "QWEN_MODEL",
                 "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL",
                 "CLAUDE_API_KEY", "CLAUDE_MODEL",
@@ -41,12 +42,25 @@ def load_config(env_file: Optional[Path] = None) -> dict:
 
 
 def create_llm(config: Optional[dict] = None) -> BaseLLM:
-    """Create an LLM instance from config"""
+    """Create an LLM instance from config.
+
+    LLM_BACKEND=offline replays recorded responses (no key, no network).
+    LLM_RECORD=<file> records every exchange of a live backend to that file.
+    """
     if config is None:
         config = load_config()
 
     backend = config.get("LLM_BACKEND", "ollama").lower()
+    if backend == "offline":
+        return OfflineLLM(config.get("LLM_RECORDING") or None)
 
+    llm = _create_live(backend, config)
+    if config.get("LLM_RECORD"):
+        return RecordingLLM(llm, config["LLM_RECORD"])
+    return llm
+
+
+def _create_live(backend: str, config: dict) -> BaseLLM:
     if backend == "qwen":
         return QwenLLM(
             api_key=config.get("QWEN_API_KEY", ""),

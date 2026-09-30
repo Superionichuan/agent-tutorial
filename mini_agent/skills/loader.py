@@ -118,8 +118,19 @@ def list_skills() -> list[str]:
     return list(get_skills().keys())
 
 
+def reload_skills() -> list[str]:
+    """Rescan the skill directories (after adding or editing a skill)"""
+    global _skills_cache
+    _skills_cache = None
+    return list_skills()
+
+
 def format_skills_prompt(skill_names: Optional[list[str]] = None) -> str:
-    """Format skills as a prompt section"""
+    """Format skills as a context section: names and descriptions only.
+
+    Progressive disclosure: the instructions stay on disk until the model
+    calls read_skill(name), so each skill costs one line of context.
+    """
     skills = get_skills()
 
     if skill_names:
@@ -128,11 +139,9 @@ def format_skills_prompt(skill_names: Optional[list[str]] = None) -> str:
     if not skills:
         return ""
 
-    lines = []
+    lines = ["[Skills]",
+             "Task instructions are available for the skills below. Before a task "
+             "that matches a skill, call read_skill(name) to load its instructions."]
     for name, skill in skills.items():
-        desc = f" - {skill.description}" if skill.description else ""
-        lines.append(f"〈{name}{desc}〉")
-        lines.append(skill.instructions)
-        lines.append("")
-
-    return "\n".join(lines)
+        lines.append(f"- {name}: {skill.description}")
+    return "\n".join(lines) + "\n"

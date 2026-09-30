@@ -78,7 +78,7 @@ def _print_tool(console, call, d):
     t = Text()
     err = d.get("is_error", False)
     t.append("● ", style=f"bold {theme.ERROR if err else theme.SUCCESS}")
-    t.append(call.get("name", "?"), style=f"bold {theme.TEXT}")
+    t.append(call.get("name", "(invalid reply)"), style=f"bold {theme.TEXT}")
     t.append(f"({call.get('args', '')})", style=theme.INACTIVE)
     content = str(d.get("content", ""))
     lines = content.split("\n")

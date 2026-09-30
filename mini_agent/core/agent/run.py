@@ -1,9 +1,9 @@
-"""The agent loop — event-emitting version
+"""The agent loop, event-emitting version
 
 Every node in the loop emits an event via on_event(type, **data) instead of
 printing directly. The default (no on_event, verbose=True) uses the built-in
-console renderer whose output matches the plain version exactly — fully
-backward compatible.
+console renderer whose output matches the plain version exactly (fully
+backward compatible).
 
 Event protocol (same taxonomy as mini_agent.session):
     turn/start   {goal, name}
@@ -12,7 +12,7 @@ Event protocol (same taxonomy as mini_agent.session):
     tool/call    {step, call_id, name, args}
     tool/result  {step, call_id, content, is_error}
     todo/write   {todos}                       (after a successful todo_write)
-    turn/end     {answer, reason}   reason in: done | token_limit | max_steps
+    turn/end     {answer, reason}   reason in: done | token_limit | max_steps | invalid_reply
 
 One event stream, many consumers:
     - console renderer (default, plain output)
@@ -42,6 +42,8 @@ def console_renderer(type: str, **d):
             print("  -> done")
         elif d["reason"] == "token_limit":
             print(f"  -> token limit ({d.get('detail', '')})")
+        else:
+            print(f"  -> stopped: {d['answer']}")
 
 
 def run_agent(
@@ -58,11 +60,13 @@ def run_agent(
     on_event=None,
     conversation: str = "",
     prompt_name: str = "agent",
+    approve=None,
 ) -> str:
     """Run the agent main loop.
 
     on_event(type, **data): event callback. None = default console rendering.
     conversation: prior dialogue of this session (projected from the session log).
+    approve(action, args) -> bool: optional policy check before each tool call.
     """
     if on_event is None:
         emit = console_renderer if verbose else (lambda type, **d: None)
@@ -79,6 +83,8 @@ def run_agent(
         llm.total_completion_tokens = 0
 
     emit("turn/start", goal=goal, name=name)
+
+    invalid = 0  # consecutive replies that did not parse
 
     for i in range(max_steps):
         step = i + 1
@@ -107,32 +113,46 @@ def run_agent(
              action=action, args=args,
              tokens_in=prompt_tokens, tokens_out=completion_tokens)
 
-        # 2. Done?
+        # 2. Invalid reply: nothing runs; the parse error is the observation
+        if action is None:
+            invalid += 1
+            if invalid == 2:
+                answer = f"Stopped after 2 invalid replies. Last reply: {thought[:200]}"
+                emit("turn/end", answer=answer, reason="invalid_reply")
+                return answer
+            result = f"Error: {args['error']}. Reply with exactly one JSON object."
+            emit("tool/result", step=step, call_id=f"s{step}", content=result, is_error=True)
+            add_step(state, thought, "(invalid reply)", {}, result)
+            continue
+        invalid = 0
+
+        # 3. Done?
         if is_done(action):
-            answer = args.get("answer") or args.get("result") or thought
-            if isinstance(args, str) and args:
-                answer = args
+            if isinstance(args, dict):
+                answer = args.get("answer") or args.get("result") or thought
+            else:
+                answer = args or thought
             answer = str(answer)  # the LLM may hand back int/list etc.
             emit("turn/end", answer=answer, reason="done")
             return answer
 
-        # 3. Token budget check
+        # 4. Token budget check
         if total_tokens >= max_tokens:
             detail = f"{total_tokens:,}/{max_tokens:,}"
             emit("turn/end", answer=f"Token limit ({total_tokens:,} tokens)",
                  reason="token_limit", detail=detail)
             return f"Token limit ({total_tokens:,} tokens)"
 
-        # 4. Execute
+        # 5. Execute
         call_id = f"s{step}"
         emit("tool/call", step=step, call_id=call_id, name=action, args=args)
-        result = execute(action, args, tools)
+        result = execute(action, args, tools, approve)
         emit("tool/result", step=step, call_id=call_id, content=result,
              is_error=result.startswith("Error"))
         if action == "todo_write" and not result.startswith("Error"):
             emit("todo/write", todos=args.get("todos", []))
 
-        # 5. Update
+        # 6. Update
         add_step(state, thought, action, args, result)
 
     emit("turn/end", answer=f"Unfinished ({max_steps} steps)", reason="max_steps")

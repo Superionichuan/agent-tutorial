@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mini_agent"
-version = "0.1.0"
+version = "1.2.0"
 description = "Minimal AI Agent Framework"
 readme = "README.md"
 license = {text = "MIT"}
@@ -28,4 +28,4 @@ where = ["."]
 include = ["mini_agent*"]
 
 [tool.setuptools.package-data]
-mini_agent = ["prompts/*.md", "**/*.md"]
+mini_agent = ["prompts/*.md", "**/*.md", "llm/recordings/*.jsonl"]
