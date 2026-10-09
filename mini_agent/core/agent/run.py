@@ -113,7 +113,25 @@ def run_agent(
              action=action, args=args,
              tokens_in=prompt_tokens, tokens_out=completion_tokens)
 
-        # 2. Invalid reply: nothing runs; the parse error is the observation
+        # 2. Done?
+        if is_done(action):
+            if isinstance(args, dict):
+                key = next((k for k in ("answer", "result") if k in args), None)
+                answer = args[key] if key else thought
+            else:
+                answer = args if args not in (None, "") else thought
+            answer = str(answer)  # the LLM may hand back int/list etc.
+            emit("turn/end", answer=answer, reason="done")
+            return answer
+
+        # 3. Token budget check (after the call: a run stops within one call)
+        if total_tokens >= max_tokens:
+            detail = f"{total_tokens:,}/{max_tokens:,}"
+            emit("turn/end", answer=f"Token limit ({total_tokens:,} tokens)",
+                 reason="token_limit", detail=detail)
+            return f"Token limit ({total_tokens:,} tokens)"
+
+        # 4. Invalid reply: nothing runs; the parse error is the observation
         if action is None:
             invalid += 1
             if invalid == 2:
@@ -126,30 +144,13 @@ def run_agent(
             continue
         invalid = 0
 
-        # 3. Done?
-        if is_done(action):
-            if isinstance(args, dict):
-                answer = args.get("answer") or args.get("result") or thought
-            else:
-                answer = args or thought
-            answer = str(answer)  # the LLM may hand back int/list etc.
-            emit("turn/end", answer=answer, reason="done")
-            return answer
-
-        # 4. Token budget check
-        if total_tokens >= max_tokens:
-            detail = f"{total_tokens:,}/{max_tokens:,}"
-            emit("turn/end", answer=f"Token limit ({total_tokens:,} tokens)",
-                 reason="token_limit", detail=detail)
-            return f"Token limit ({total_tokens:,} tokens)"
-
         # 5. Execute
         call_id = f"s{step}"
         emit("tool/call", step=step, call_id=call_id, name=action, args=args)
         result = execute(action, args, tools, approve)
-        emit("tool/result", step=step, call_id=call_id, content=result,
-             is_error=result.startswith("Error"))
-        if action == "todo_write" and not result.startswith("Error"):
+        failed = result.startswith("Error:")  # tools report failures with this prefix
+        emit("tool/result", step=step, call_id=call_id, content=result, is_error=failed)
+        if action == "todo_write" and not failed:
             emit("todo/write", todos=args.get("todos", []))
 
         # 6. Update

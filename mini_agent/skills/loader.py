@@ -54,16 +54,18 @@ def parse_frontmatter(content: str) -> tuple[dict, str]:
             key, val = line.split(":", 1)
             fm[key.strip()] = val.strip().strip('"\'')
 
-    return fm, body.strip()
+    return fm, body.strip("\n")
 
 
 def load_skill(skill_dir: Path) -> Optional[Skill]:
     """Load one skill from a directory"""
     skill_file = skill_dir / "SKILL.md"
-    if not skill_file.exists():
+    if not skill_file.is_file():
         return None
-
-    content = skill_file.read_text()
+    try:
+        content = skill_file.read_text()
+    except (OSError, UnicodeDecodeError):
+        return None
     fm, body = parse_frontmatter(content)
 
     return Skill(
@@ -128,8 +130,8 @@ def reload_skills() -> list[str]:
 def format_skills_prompt(skill_names: Optional[list[str]] = None) -> str:
     """Format skills as a context section: names and descriptions only.
 
-    Progressive disclosure: the instructions stay on disk until the model
-    calls read_skill(name), so each skill costs one line of context.
+    Progressive disclosure: the instructions stay out of the context until
+    the model calls read_skill(name), so each skill costs one line of context.
     """
     skills = get_skills()
 

@@ -21,6 +21,8 @@ def parse_response(response: str) -> Tuple[str, Optional[str], dict]:
             data = None
         if isinstance(data, dict) and isinstance(data.get("action"), str):
             args = data.get("args")
-            return data.get("thought", ""), data["action"], args if args is not None else {}
+            thought = data.get("thought")
+            thought = "" if thought is None else str(thought)
+            return thought, data["action"], args if args is not None else {}
         start = response.find("{", start + 1)
     return response, None, {"error": 'the reply contains no JSON object with a string "action" field'}

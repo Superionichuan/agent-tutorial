@@ -2,6 +2,8 @@
 import subprocess
 import sys
 
+from ..workspace import cwd
+
 
 def run_python(code: str) -> str:
     """Run Python code (fresh process; sees newly installed packages)"""
@@ -10,7 +12,8 @@ def run_python(code: str) -> str:
             [sys.executable, "-c", code],
             capture_output=True,
             text=True,
-            timeout=120
+            timeout=120,
+            cwd=cwd()
         )
         output = result.stdout + result.stderr
         return output if output else "OK"

@@ -1,10 +1,10 @@
 """Read a file"""
-from pathlib import Path
+from ..workspace import resolve
 
 
 def read_file(path: str) -> str:
     """Read file content"""
     try:
-        return Path(path).read_text()
+        return resolve(path).read_text()
     except Exception as e:
         return f"Error: {e}"

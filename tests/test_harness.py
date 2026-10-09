@@ -136,7 +136,11 @@ def test_calc_scientific_notation():
     from mini_agent.tools.math import calc
     assert abs(float(calc("78.4e9 * 11.9e-30 / 1.602176634e-19")) - 5.823078306) < 1e-6
     assert calc("2 * x").startswith("Error: use only numbers")
-    assert calc("e").startswith("Error: name")
+    assert calc("e").startswith("Error: use only numbers")
+    assert calc("...").startswith("Error: use only numbers")
+    assert calc("9**9**9").startswith("Error: integer exponents")
+    assert abs(float(calc("27**(1/3)")) - 3.0) < 1e-12
+    assert calc("__import__('os')").startswith("Error: use only numbers")
 
 
 if __name__ == "__main__":

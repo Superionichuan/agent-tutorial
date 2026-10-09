@@ -8,6 +8,7 @@ from ...llm import create_llm
 from ...tools import TOOLS, TOOL_DESC
 from ...mem import Memory
 from ...skills import format_skills_prompt, list_skills
+from ...tools import workspace as _workspace
 
 
 class Agent:
@@ -88,7 +89,17 @@ class Agent:
         """Run a goal. on_event(type, **data) receives the event stream (None = console output)."""
         workspace_str = get_workspace_str(self.config.workspace)
         context = f"Workspace: {workspace_str}\n\n{self.tool_desc}"
+        try:
+            self.config.workspace.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass  # a tool that uses the path reports the problem as data
+        token = _workspace.current.set(self.config.workspace)  # relative tool paths start here
+        try:
+            return self._run(goal, context, verbose, on_event, conversation)
+        finally:
+            _workspace.current.reset(token)
 
+    def _run(self, goal, context, verbose, on_event, conversation) -> str:
         return run_agent(
             llm=self.llm,
             tools=self.tools,

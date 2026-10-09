@@ -16,7 +16,7 @@ Usage:
     agent = Agent()
     result = agent.run("calculate 1+1")
 """
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 from .core import Agent, State
 from .session import SessionLog, new_call_id
