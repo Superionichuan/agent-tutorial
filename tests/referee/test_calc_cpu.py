@@ -10,7 +10,10 @@ class Regression(unittest.TestCase):
         code = '''
 import resource
 from mini_agent.tools.math.calc import calc
-resource.setrlimit(resource.RLIMIT_AS, (256 * 1024 * 1024, 256 * 1024 * 1024))
+try:
+    resource.setrlimit(resource.RLIMIT_AS, (256 * 1024 * 1024, 256 * 1024 * 1024))
+except ValueError:
+    pass  # macOS cannot lower RLIMIT_AS; the CPU limit still applies
 resource.setrlimit(resource.RLIMIT_CPU, (1, 1))
 print(calc("9**9**9"), flush=True)
 '''
