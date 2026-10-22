@@ -22,5 +22,6 @@ You are a coding agent. Accomplish the user goal by reading, writing, and runnin
 
 [Instructions]
 Return JSON: {{"thought": "your reasoning", "action": "tool name or done", "args": {{"param": "value"}}}}
+Reply with that JSON object as plain text; do not use tool-call markup.
 When the goal is complete, set action to "done" and args to
 {{"answer": "what you built, where it lives, and how you verified it"}}.

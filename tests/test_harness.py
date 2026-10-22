@@ -132,6 +132,20 @@ def test_log_projection_includes_parse_error():
     assert any(m["role"] == "tool" and "no JSON object" in m["content"] for m in msgs)
 
 
+def test_markup_reply_is_read():
+    dsml = ('<\uff5cDSML\uff5c calls>\n<\uff5cDSML\uff5c invoke name="calc">\n'
+            '<\uff5cDSML\uff5c parameter name="args" string="false">{"expr": "78.4e9 * 11.9e-30 / 1.602176634e-19"}</\uff5cDSML\uff5c parameter>\n'
+            '</\uff5cDSML\uff5c invoke>\n</\uff5cDSML\uff5c calls>')
+    assert parse_response(dsml)[1:] == ("calc", {"expr": "78.4e9 * 11.9e-30 / 1.602176634e-19"})
+    direct = ('<\uff5cDSML\uff5c invoke name="calc">\n<\uff5cDSML\uff5c parameter name="expr" string="true">1/(2.99792458e10 * 33.36e-15)'
+              '</\uff5cDSML\uff5c parameter>\n</\uff5cDSML\uff5c invoke>')
+    assert parse_response(direct)[1:] == ("calc", {"expr": "1/(2.99792458e10 * 33.36e-15)"})
+    two = direct + '\n<\uff5cDSML\uff5c invoke name="done"><\uff5cDSML\uff5c parameter name="answer" string="true">x</\uff5cDSML\uff5c parameter></\uff5cDSML\uff5c invoke>'
+    assert parse_response(two)[1] == "calc"
+    _, ev, _ = run([dsml, J("done", {"answer": "5.823 eV"})])
+    assert [d["content"] for t, d in ev if t == "tool/result"][0].startswith("5.8230783")
+
+
 def test_calc_scientific_notation():
     from mini_agent.tools.math import calc
     assert abs(float(calc("78.4e9 * 11.9e-30 / 1.602176634e-19")) - 5.823078306) < 1e-6
