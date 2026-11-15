@@ -1,4 +1,6 @@
-# AgentForge Tutorial 1: The Anatomy of an Agent
+# AgentForge Tutorial 1: From Chatbot to Agent
+
+*The anatomy of an agent*
 
 Hands-on Workshop on AI Agents as Scientific Research Assistants
 Nanyang Technological University · Supported by Schmidt Sciences
