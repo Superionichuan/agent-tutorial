@@ -17,7 +17,7 @@ runtime and is sent only to the provider you select. Without a key, choose
 ```bash
 git clone https://github.com/Superionichuan/agent-tutorial.git
 cd agent-tutorial
-pip install -e .
+pip install -e . pandas jupyterlab   # pandas for the tables, JupyterLab to open the notebook
 cp .env.example .env      # then edit .env with your key, or set LLM_BACKEND=offline
 jupyter lab notebooks/agent_tutorial.ipynb
 ```
