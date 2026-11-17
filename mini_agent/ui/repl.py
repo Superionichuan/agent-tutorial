@@ -69,7 +69,7 @@ class LiveStatus:
 
 def _print_think(console, d):
     t = Text()
-    t.append("✻ ", style=theme.CLAUDE)
+    t.append("✻ ", style=theme.ACCENT)
     t.append(d["thought"], style=theme.INACTIVE)
     t.append(f"  (↑{d.get('tokens_in', 0):,} ↓{d.get('tokens_out', 0):,})",
              style=theme.SUBTLE)
@@ -94,7 +94,7 @@ def _print_tool(console, call, d):
 
 def _print_todos(console, todos):
     t = Text()
-    t.append("⚑ Plan", style=f"bold {theme.CLAUDE}")
+    t.append("⚑ Plan", style=f"bold {theme.ACCENT}")
     for item in todos:
         st = item.get("status")
         if st == "completed":
@@ -130,7 +130,7 @@ def _rebuild(console, log):
         elif t == "context/compact":
             console.print(Text(compact_notice(d), style=theme.INACTIVE))
         elif t == "turn/end":
-            console.print(Text("● ", style=f"bold {theme.CLAUDE}")
+            console.print(Text("● ", style=f"bold {theme.ACCENT}")
                           + Text(str(d["answer"]), style=theme.TEXT))
 
 
@@ -146,7 +146,7 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
         if live is not None:
             live.stop()
         try:
-            console.print(Text(f"Allow {action}?", style=f"bold {theme.CLAUDE}"))
+            console.print(Text(f"Allow {action}?", style=f"bold {theme.ACCENT}"))
             console.print(Text(summarize_call(action, args), style=theme.TEXT))
             typed = console.input(Text("[y]es / [n]o / [a]lways for this tool: ",
                                        style=theme.SUBTLE))
@@ -235,7 +235,7 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
                 elif t == "context/compact":
                     live.console.print(Text(compact_notice(d), style=theme.INACTIVE))
                 elif t == "turn/end":
-                    live.console.print(Text("● Answer:", style=f"bold {theme.CLAUDE}"))
+                    live.console.print(Text("● Answer:", style=f"bold {theme.ACCENT}"))
                     live.console.print(Markdown(str(d["answer"])))
                     if stop_notice(d):
                         live.console.print(Text(stop_notice(d), style=theme.WARNING))
@@ -271,7 +271,7 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
 
     while True:
         try:
-            goal = console.input(Text("❯ ", style=f"bold {theme.CLAUDE}"))
+            goal = console.input(Text("❯ ", style=f"bold {theme.ACCENT}"))
         except (EOFError, KeyboardInterrupt):
             break
         goal = goal.strip()

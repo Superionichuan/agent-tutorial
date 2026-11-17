@@ -4,7 +4,7 @@ Layering (three grays + semantic colors + brand color):
     text     white   — body/answers (brightest)
     inactive mid-gray — secondary info (think content, args, results)
     subtle   dark-gray — structural glyphs (⎿, counters, token stats) (darkest)
-    claude   orange  — identity color (marker glyphs)
+    accent   orange  — marker glyphs, prompt, answer label
     each key color has a lighter shimmer twin — per-frame interpolation = flowing glow
 """
 import random
@@ -12,10 +12,10 @@ import random
 # hand-tuned dark palette values
 TEXT = "rgb(255,255,255)"
 INACTIVE = "rgb(153,153,153)"
-INACTIVE_SHIMMER = "rgb(193,193,193)"   # CC original: shimmer tier for streaming text
-SUBTLE = "rgb(120,120,120)"       # CC original 80,80,80 is too dark on light terminals; bumped one notch
-CLAUDE = "rgb(215,119,87)"        # claude orange
-CLAUDE_SHIMMER = "rgb(235,159,127)"
+INACTIVE_SHIMMER = "rgb(193,193,193)"   # shimmer tier for streaming text
+SUBTLE = "rgb(120,120,120)"       # 80,80,80 is too dark on light terminals
+ACCENT = "rgb(215,119,87)"          # accent orange
+ACCENT_SHIMMER = "rgb(235,159,127)"
 SPIN = "rgb(147,165,255)"         # spinner blue
 SPIN_SHIMMER = "rgb(177,195,255)"
 SUCCESS = "rgb(78,186,101)"

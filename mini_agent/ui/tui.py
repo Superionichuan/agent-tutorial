@@ -176,7 +176,7 @@ class ThinkMsg(Msg):
 
     def render(self):
         body = Text()
-        body.append("✻ ", style=theme.CLAUDE)
+        body.append("✻ ", style=theme.ACCENT)
         body.append(self.thought, style=theme.INACTIVE)
         body.append(f"  ({self.tokens})", style=theme.SUBTLE)
         return body
@@ -270,13 +270,13 @@ class AnswerMsg(Msg):
             # once complete, render as markdown (code blocks/lists/headings/emphasis)
             return Markdown(self.content, style=theme.TEXT)
         t = Text()
-        t.append("● ", style=f"bold {theme.CLAUDE}")
+        t.append("● ", style=f"bold {theme.ACCENT}")
         t.append(self.content[: self._shown], style=theme.TEXT)
         return t
 
 
 class TodoCard(Msg):
-    """Todo card (CC-style checklist): done / in progress / pending"""
+    """Todo card (checklist): done / in progress / pending"""
 
     def __init__(self, todos: list):
         super().__init__()
@@ -284,7 +284,7 @@ class TodoCard(Msg):
 
     def render(self):
         t = Text()
-        t.append("⚑ Plan", style=f"bold {theme.CLAUDE}")
+        t.append("⚑ Plan", style=f"bold {theme.ACCENT}")
         for item in self.todos:
             st = item.get("status")
             if st == "completed":
@@ -326,7 +326,7 @@ class StatusBar(Static):
         mini = pets.PETS.get(getattr(self, "pet", ""), next(iter(pets.PETS.values())))["mini"]
         pet = mini.get(self.state, mini["idle"])
         t.append(pet[self._pet_frame % len(pet)] + " ")
-        t.append(f" {self.model} ", style=f"{theme.CLAUDE} reverse")
+        t.append(f" {self.model} ", style=f"{theme.ACCENT} reverse")
         t.append(f"  ↑{self.tokens_in:,} ↓{self.tokens_out:,} tok", style=theme.SUBTLE)
         t.append(f"  step {self.steps}", style=theme.SUBTLE)
         color = {"idle": theme.SUCCESS, "running": theme.WARNING}.get(self.state, theme.ERROR)
@@ -399,7 +399,7 @@ class MiniAgentApp(App):
         yield Vertical(
             Rule(classes="inputline"),
             Horizontal(
-                Static(Text("❯", style=f"bold {theme.CLAUDE}"), id="promptsym"),
+                Static(Text("❯", style=f"bold {theme.ACCENT}"), id="promptsym"),
                 Input(placeholder="Ask anything... (enter to submit)"),
                 id="promptrow",
             ),
