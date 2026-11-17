@@ -87,13 +87,12 @@ PROVIDER = "__DEFAULT_PROVIDER__"  # @param __PROVIDERS__
 import base64, gzip, hashlib, json, os, re, subprocess, sys
 from pathlib import Path
 
-# ---- 1. install mini_agent 1.2.2 from a fixed commit of the Tutorial 1 repository ----
+# ---- 1. install mini_agent 2.0.0, the release wheel of the Tutorial 1 repository ----
 from importlib.metadata import PackageNotFoundError, version
 
-VERSION = "1.2.2"
-COMMIT = "72c413274025af372c718aa916263eeae318207d"
-WHEEL = ("https://github.com/Superionichuan/agent-tutorial/raw/"
-         f"{COMMIT}/dist/mini_agent-{VERSION}-py3-none-any.whl")
+VERSION = "2.0.0"
+WHEEL = ("https://github.com/Superionichuan/agent-tutorial/releases/download/"
+         f"v{VERSION}/mini_agent-{VERSION}-py3-none-any.whl")
 try:
     _installed = version("mini_agent")
 except PackageNotFoundError:
@@ -115,7 +114,7 @@ if not _template.exists():           # repair an incomplete download
     import urllib.request
     _template.parent.mkdir(parents=True, exist_ok=True)
     urllib.request.urlretrieve("https://raw.githubusercontent.com/Superionichuan/"
-                               f"agent-tutorial/{COMMIT}/mini_agent/prompts/agent.md",
+                               f"agent-tutorial/v{VERSION}/mini_agent/prompts/agent.md",
                                _template)
     print("Repaired the prompt template.")
 

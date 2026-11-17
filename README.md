@@ -163,8 +163,8 @@ environment's Python (the one `mini_agent doctor` shows on its first lines):
 & "$(uv tool dir)\mini-agent\Scripts\python.exe" my_tool.py   # Windows PowerShell
 ```
 
-Once this version is on the main branch, `pip install "git+https://github.com/Superionichuan/agent-tutorial"`
-installs it into any Python 3.10 or newer (it needs git).
+In any Python 3.10 or newer, `pip install "git+https://github.com/Superionichuan/agent-tutorial"`
+installs it too (it needs git).
 
 ### Models
 
