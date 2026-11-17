@@ -223,10 +223,21 @@ def test_asks_on_a_terminal_and_runs_after_yes(mode):
     os.close(slave)
     seen = b""
 
-    def wait_for(text: bytes, timeout=60):
+    def drain():
+        nonlocal seen
+        while select.select([master], [], [], 0)[0]:
+            try:
+                chunk = os.read(master, 65536)
+            except OSError:
+                return
+            if not chunk:
+                return
+            seen += chunk
+
+    def wait_for(text: bytes, timeout=60, start=0):
         nonlocal seen
         end = time.time() + timeout
-        while text not in seen:
+        while text not in seen[start:]:
             if time.time() > end:
                 raise AssertionError(f"did not see {text!r}; output so far:\n{seen[-2000:]!r}")
             ready, _, _ = select.select([master], [], [], 0.2)
@@ -244,7 +255,19 @@ def test_asks_on_a_terminal_and_runs_after_yes(mode):
         os.write(master, b"y\r")
         wait_for(b"finished")
         if mode == "interactive":
-            os.write(master, b"/exit\r")
+            # the next prompt first: input typed before it can be dropped by the line editor
+            # (seen on macOS); then /exit, again every few seconds until the program ends
+            wait_for(b"\xe2\x9d\xaf", start=seen.rindex(b"finished"))
+            for _ in range(10):
+                try:
+                    os.write(master, b"/exit\r")
+                except OSError:
+                    break
+                try:
+                    proc.wait(timeout=3)
+                    break
+                except subprocess.TimeoutExpired:
+                    drain()                           # keep reading what it prints
         proc.wait(timeout=30)
     finally:
         if proc.poll() is None:
