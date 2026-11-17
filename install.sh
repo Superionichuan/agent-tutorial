@@ -4,10 +4,11 @@
 #   curl -LsSf https://raw.githubusercontent.com/Superionichuan/agent-tutorial/main/install.sh | sh
 #
 # What it does: installs uv (the Python package manager from astral.sh) if it is missing,
-# lets uv install mini_agent with its own Python 3.12, puts the `mini_agent` command on
-# your PATH, and starts `mini_agent setup` (choose a model and paste a key).
-# Running it again upgrades. Uninstall: uv tool uninstall mini_agent
-# (your settings stay in ~/.mini_agent; delete that folder to remove them too).
+# lets uv install mini_agent with a Python 3.12 (one it finds, or one it downloads), puts the
+# `mini_agent` command on your PATH, and starts `mini_agent setup` (choose a model and paste
+# a key) unless a model is set up already. Running it again upgrades and keeps your settings.
+# Uninstall: uv tool uninstall mini_agent (your settings and session logs stay in
+# ~/.mini_agent; delete that folder to remove them too).
 #
 # Options, as environment variables:
 #   MINI_AGENT_SPEC      what to install (default: the release wheel of VERSION below)
@@ -58,8 +59,13 @@ if [ -z "$UV" ]; then
     else
         fail "neither curl nor wget is available to download uv"
     fi
-    sh "$uv_installer" || fail "the uv installer stopped"
-    rm -f "$uv_installer"
+    # its output only if it fails: on success the lines below say what to do next
+    uv_log="$(mktemp)" || fail "no temporary file for the uv installer's output"
+    if ! sh "$uv_installer" >"$uv_log" 2>&1; then
+        cat "$uv_log"
+        fail "the uv installer stopped"
+    fi
+    rm -f "$uv_installer" "$uv_log"
     UV="$(find_uv)" || fail "uv was installed but cannot be found"
 fi
 say "Using uv: $UV"
@@ -84,7 +90,11 @@ esac
 say ""
 say "mini_agent is installed: $BIN/mini_agent"
 
-if [ "${MINI_AGENT_NO_SETUP:-}" != "1" ] && (: </dev/tty) 2>/dev/null; then
+CONFIG="${MINI_AGENT_HOME:-$HOME/.mini_agent}/config.env"
+if [ -f "$CONFIG" ] && grep -Eq '^[A-Za-z_][A-Za-z0-9_]*=.' "$CONFIG" 2>/dev/null; then
+    say ""
+    say "Your settings are kept; \`mini_agent setup\` changes them."
+elif [ "${MINI_AGENT_NO_SETUP:-}" != "1" ] && (: </dev/tty) 2>/dev/null; then
     say ""
     say "Next: choose a model and paste your key (Ctrl-C skips; run \`mini_agent setup\` later)."
     "$BIN/mini_agent" setup </dev/tty || true

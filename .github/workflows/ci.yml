@@ -122,6 +122,36 @@ jobs:
           $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
           if (($userPath -split ';') -notcontains $bin) { throw "$bin is not on the user PATH" }
 
+      - name: The README's Python line works; a second run of the installer keeps the settings
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          uv_exe="$(command -v uv || echo "$HOME/.local/bin/uv")"
+          "$("$uv_exe" tool dir)/mini-agent/bin/python" -c "import mini_agent; from mini_agent import Agent, tool; print('import ok', mini_agent.__version__)"
+          mkdir -p "$HOME/.mini_agent" && printf 'LLM_BACKEND=offline\n' > "$HOME/.mini_agent/config.env"
+          wheel="$(ls "$PWD"/wheelhouse/*.whl)"
+          out="$(MINI_AGENT_SPEC="mini_agent[ui] @ file://$wheel" sh install.sh < /dev/null)"
+          printf '%s\n' "$out" | tail -n 4
+          printf '%s\n' "$out" | grep -qF 'Your settings are kept; `mini_agent setup` changes them.'
+          grep -qx 'LLM_BACKEND=offline' "$HOME/.mini_agent/config.env"
+
+      - name: The README's Python line works; a second run of the installer keeps the settings
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $uv = (Get-Command uv -ErrorAction SilentlyContinue).Source
+          if (-not $uv) { $uv = Join-Path $HOME '.local\bin\uv.exe' }
+          & "$(& $uv tool dir)\mini-agent\Scripts\python.exe" -c "import mini_agent; from mini_agent import Agent, tool; print('import ok', mini_agent.__version__)"
+          if ($LASTEXITCODE -ne 0) { throw 'the README Python line failed' }
+          New-Item -ItemType Directory -Force -Path (Join-Path $HOME '.mini_agent') | Out-Null
+          Set-Content -Path (Join-Path $HOME '.mini_agent\config.env') -Value 'LLM_BACKEND=offline'
+          $wheel = (Get-ChildItem wheelhouse\*.whl).FullName
+          $env:MINI_AGENT_SPEC = "mini_agent[ui] @ file:///$($wheel -replace '\\', '/')"
+          $out = powershell -NoProfile -ExecutionPolicy ByPass -c "Get-Content -Raw install.ps1 | Invoke-Expression" *>&1 | Out-String
+          ($out.Trim() -split "`n") | Select-Object -Last 4
+          if ($out -notmatch 'Your settings are kept') { throw 'the second run did not keep the settings' }
+          if ((Get-Content (Join-Path $HOME '.mini_agent\config.env') -Raw).Trim() -ne 'LLM_BACKEND=offline') { throw 'config.env changed' }
+
   release:
     name: GitHub release (tags only)
     if: startsWith(github.ref, 'refs/tags/v')

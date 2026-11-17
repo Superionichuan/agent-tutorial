@@ -3,10 +3,11 @@
 #   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/Superionichuan/agent-tutorial/main/install.ps1 | iex"
 #
 # What it does: installs uv (the Python package manager from astral.sh) if it is missing,
-# lets uv install mini_agent with its own Python 3.12, puts the `mini_agent` command on
-# your PATH, and starts `mini_agent setup` (choose a model and paste a key).
-# Running it again upgrades. Uninstall: uv tool uninstall mini_agent
-# (your settings stay in %USERPROFILE%\.mini_agent; delete that folder to remove them too).
+# lets uv install mini_agent with a Python 3.12 (one it finds, or one it downloads), puts the
+# `mini_agent` command on your PATH, and starts `mini_agent setup` (choose a model and paste
+# a key) unless a model is set up already. Running it again upgrades and keeps your settings.
+# Uninstall: uv tool uninstall mini_agent (your settings and session logs stay in
+# %USERPROFILE%\.mini_agent; delete that folder to remove them too).
 #
 # Options, as environment variables:
 #   MINI_AGENT_SPEC      what to install (default: the release wheel of $Version below)
@@ -78,7 +79,14 @@
 
     Write-Host ''
     Write-Host "mini_agent is installed: $exe"
-    if ($env:MINI_AGENT_NO_SETUP -ne '1' -and -not [Console]::IsInputRedirected) {
+    $configDir = if ($env:MINI_AGENT_HOME) { $env:MINI_AGENT_HOME } else { Join-Path $HOME '.mini_agent' }
+    $config = Join-Path $configDir 'config.env'
+    $settingsKept = (Test-Path $config) -and
+        (Select-String -Path $config -Pattern '^[A-Za-z_][A-Za-z0-9_]*=.' -Quiet)
+    if ($settingsKept) {
+        Write-Host ''
+        Write-Host 'Your settings are kept; `mini_agent setup` changes them.'
+    } elseif ($env:MINI_AGENT_NO_SETUP -ne '1' -and -not [Console]::IsInputRedirected) {
         Write-Host ''
         Write-Host 'Next: choose a model and paste your key (Ctrl-C skips; run "mini_agent setup" later).'
         & $exe setup
