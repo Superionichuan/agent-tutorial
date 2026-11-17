@@ -94,7 +94,7 @@ def test_setup_needs_a_terminal_or_options():
 
 
 def test_mask():
-    assert mask("sk-or-v1-" + "a" * 60 + "f326") == "sk-or-v1-…f326"
+    assert mask("sk-or-v1-abcdefghijklmnopf326") == "sk-or-v1-…f326"
     assert mask("sk-ant-api03-xyz123456789") == "sk-ant…6789"
     assert mask("short") == "****"
 
