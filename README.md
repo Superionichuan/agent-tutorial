@@ -17,9 +17,9 @@ runtime and is sent only to the provider you select. Without a key, choose
 ## Install on your computer
 
 One command installs `mini_agent` in your user account (no administrator rights, no Python
-needed beforehand). It sets up [uv](https://docs.astral.sh/uv/), which brings its own
-Python 3.12, puts the `mini_agent` command on your PATH, and then asks for a provider and
-a key (`mini_agent setup`).
+needed beforehand). It sets up [uv](https://docs.astral.sh/uv/), which uses a Python 3.12 it
+finds on your computer or downloads one, puts the `mini_agent` command on your PATH, and
+then asks for a provider and a key (`mini_agent setup`).
 
 macOS or Linux, in Terminal:
 
@@ -34,10 +34,26 @@ powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/Sup
 ```
 
 Then open a new terminal and run `mini_agent`. `mini_agent doctor` shows what is set up.
-Running the command again upgrades. To uninstall: `uv tool uninstall mini_agent` (your
-settings stay in `~/.mini_agent`; delete that folder to remove them too).
+Running the command again upgrades and keeps your settings. To uninstall:
+`uv tool uninstall mini_agent`; what it leaves behind is listed under
+[What mini_agent writes](#what-mini_agent-writes).
 
 ## Using mini_agent
+
+### Getting a key
+
+mini_agent needs a language model. The simplest is [OpenRouter](https://openrouter.ai): a
+service that sells many companies' models under one key, pay as you go. Sign up, add credit
+(Settings, Credits), and create a key at
+[openrouter.ai/settings/keys](https://openrouter.ai/settings/keys); `mini_agent setup` asks
+for it. With the default model (DeepSeek V4 Flash), four everyday tasks of two or three
+steps (1,400 to 5,700 tokens) cost between US$0.0001 and US$0.0005 each when we measured
+them in November 2026, so a dollar of credit lasts for a few thousand such tasks; longer
+tasks cost more.
+
+Without a key: a local model with [Ollama](https://ollama.com) (free, on your own computer;
+`mini_agent setup --provider ollama`), or the offline demo, which replays only the
+tutorial's recorded tasks (`mini_agent --backend offline "Compute 3**7."`).
 
 ### First run
 
@@ -63,12 +79,18 @@ The agent works in the current folder; `--workspace DIR` chooses another. With O
 `--model` picks another of its models for one run, e.g.
 `mini_agent --model qwen/qwen3.8-flash "What is 947 * 863?"`.
 
+In the interactive modes, `/plan TASK` asks the agent to explore and write a step-by-step
+plan for the task, without changing anything, and to wait for your go-ahead; `/plan off`
+ends plan mode. It is an instruction to the model, not a lock: risky calls still ask first.
+
 ### Safety
 
 The agent asks before each risky call: a shell command (`bash`), Python code
 (`run_python`) or a file write (`write_file`). Its other tools (reading files, listing a
 folder, the calculator, notes) run without asking.
 
+- At the prompt, `y` allows this one call, `n` refuses it (the agent is told and tries
+  something else), and `a` allows that tool for the rest of the session without asking again.
 - `--yes` (same as `--approve auto`) runs risky calls without asking; `--approve deny`
   never runs them.
 - With no terminal to ask (a script, a scheduled job), the first risky call stops the task
@@ -82,25 +104,34 @@ folder, the calculator, notes) run without asking.
 mini_agent keeps a folder `.mini_agent/` in the workspace (git ignores it):
 
 - `user.md`: every message you sent, word for word;
-- `handoff.md`: where a stopped task stands: the goal, the steps done, the next step, the
-  files written and read.
+- `handoff.md`: where an unfinished task stands (the goal, the steps done, the next step,
+  the files written and read), written when old steps are shortened and when a task stops
+  before it is done; `mini_agent -c` picks it up.
 
 Notes the agent saves with its `remember` tool go to `~/.mini_agent/memory/`, with the
-evidence it gives for them. All of these are read before every model call, so a long task
-keeps its instructions. When the next prompt would fill more than half of the model's
-context window, old steps are shortened: long results are cut, old steps are folded to one
-line, and only if that is not enough does the model summarise them. A one-line notice
-says when this happens. `--no-lifecycle` runs the plain loop instead: no `.mini_agent`
-files and no shortening, so a task stops when the context window is full.
+evidence it gives for them. Before every model call the agent rereads the messages of the
+current session (one task, or one interactive session), its open handoff and the saved
+notes, so a long task keeps its instructions even after old steps are shortened. Messages
+of earlier sessions stay in `user.md` but are not shown.
+
+When the next prompt would fill more than half of the model's context window, old steps
+are shortened: long results are cut, old steps are folded to one line, and only if that is
+not enough does the model summarise them. A one-line notice says when this happens.
+`--no-lifecycle` runs the plain loop instead: no `.mini_agent` files and no shortening, so
+a task stops when the context window is full.
 
 A task stops after `--budget` tokens (all its model calls together; default 1,000,000, or
-`MINI_AGENT_BUDGET`). `mini_agent -c` continues the latest unfinished task after a stop, a
-crash or Ctrl+C; a tool call that was cut off is not run again.
+`MINI_AGENT_BUDGET`). `mini_agent -c`, run in the same folder, continues there: the latest
+session in a terminal, or the latest unfinished task in a script (then it exits with that
+task's status). A task that stopped, crashed or was cut off with Ctrl+C goes on from its
+last step; a tool call that was cut off is not run again. In a folder with nothing to
+continue, `-c` runs nothing and names the folder of the latest unfinished task.
 
-Exit status of `mini_agent "task"`: 0 done; 1 stopped before the end (token budget, step
-limit, a model error, ...); 3 a risky call needs approval and there was no terminal to ask;
-2 a usage or set-up error; 130 interrupted. After 1, 3 or 130, `mini_agent -c` continues
-the task.
+Exit status of `mini_agent "task"`: 0 the agent finished (its answer says whether it
+managed); 1 stopped before the end (token budget, step limit, a model error, a task the
+offline demo has no recording of, ...); 3 a risky call needs approval and there was no
+terminal to ask; 2 a usage or set-up error, or nothing for `-c` to continue here; 130
+interrupted. After 1, 3 or 130, `mini_agent -c` in the same folder continues the task.
 
 ### Your own tool
 
@@ -121,6 +152,17 @@ The function's name, docstring and typed parameters tell the model what the tool
 set up with `mini_agent setup`; in Python it runs every tool without asking unless you
 pass `approve="ask"`.
 
+The one-line install keeps mini_agent in its own environment, so run your script with that
+environment's Python (the one `mini_agent doctor` shows on its first lines):
+
+```bash
+"$(uv tool dir)/mini-agent/bin/python" my_tool.py             # macOS, Linux
+& "$(uv tool dir)\mini-agent\Scripts\python.exe" my_tool.py   # Windows PowerShell
+```
+
+Once this version is on the main branch, `pip install "git+https://github.com/Superionichuan/agent-tutorial"`
+installs it into any Python 3.10 or newer (it needs git).
+
 ### Models
 
 `mini_agent setup` sets the model for the command line and for Python. Other choices:
@@ -128,12 +170,27 @@ pass `approve="ask"`.
 - an environment variable instead of setup: `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`,
   `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, and optionally `LLM_MODEL`;
 - any OpenAI-compatible server (vLLM, LM Studio, a company gateway):
-  `mini_agent setup --provider compat --base-url http://localhost:8000/v1`;
+  `mini_agent setup --provider compat --base-url http://localhost:8000/v1 --model NAME`
+  (press Enter at the key prompt if the server needs no key);
 - a local Ollama server: `mini_agent setup --provider ollama` (model `qwen3:8b` unless you
   add `--model NAME`; pull the model in Ollama first). With no settings at all, mini_agent
   uses a local Ollama server if one is running;
 - offline: `mini_agent --backend offline "Compute 3**7."` replays a recorded run: no key,
   no network, and only the tutorial's own tasks.
+
+### What mini_agent writes
+
+- `~/.mini_agent/config.env`: your settings from `mini_agent setup`, including the key
+  (readable only by you on macOS and Linux);
+- `~/.mini_agent/memory/`: notes the agent saves with `remember`, and a short daily log;
+- `~/.mini_agent/skills/`: skills you add;
+- `~/.mini_agent/sessions/`: one log per task or interactive session, with every message,
+  step, tool result and answer; `mini_agent -c` reads them;
+- `.mini_agent/` in each folder the agent worked in: `user.md` and `handoff.md`.
+
+On Windows, `~` is `C:\Users\<name>`. `uv tool uninstall mini_agent` removes the program
+only: delete `~/.mini_agent` and the `.mini_agent` folders to remove the rest. uv itself,
+and a Python it downloaded, stay; uv's documentation says how to remove them.
 
 ## Run locally
 
