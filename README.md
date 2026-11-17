@@ -81,7 +81,8 @@ The agent works in the current folder; `--workspace DIR` chooses another. With O
 
 In the interactive modes, `/plan TASK` asks the agent to explore and write a step-by-step
 plan for the task, without changing anything, and to wait for your go-ahead; `/plan off`
-ends plan mode. It is an instruction to the model, not a lock: risky calls still ask first.
+ends plan mode. It is an instruction to the model, not a lock: risky calls still ask first,
+unless you allowed that tool with `a` earlier in the session.
 
 ### Safety
 
@@ -89,8 +90,9 @@ The agent asks before each risky call: a shell command (`bash`), Python code
 (`run_python`) or a file write (`write_file`). Its other tools (reading files, listing a
 folder, the calculator, notes) run without asking.
 
-- At the prompt, `y` allows this one call, `n` refuses it (the agent is told and tries
-  something else), and `a` allows that tool for the rest of the session without asking again.
+- At the prompt, `y` allows this one call, `n` refuses it (the agent is told; it may ask
+  again or try another way), and `a` allows that tool for the rest of the session without
+  asking again.
 - `--yes` (same as `--approve auto`) runs risky calls without asking; `--approve deny`
   never runs them.
 - With no terminal to ask (a script, a scheduled job), the first risky call stops the task
@@ -121,11 +123,12 @@ not enough does the model summarise them. A one-line notice says when this happe
 a task stops when the context window is full.
 
 A task stops after `--budget` tokens (all its model calls together; default 1,000,000, or
-`MINI_AGENT_BUDGET`). `mini_agent -c`, run in the same folder, continues there: the latest
-session in a terminal, or the latest unfinished task in a script (then it exits with that
-task's status). A task that stopped, crashed or was cut off with Ctrl+C goes on from its
-last step; a tool call that was cut off is not run again. In a folder with nothing to
-continue, `-c` runs nothing and names the folder of the latest unfinished task.
+`MINI_AGENT_BUDGET`). `mini_agent -c` continues work in the folder you run it in. In a
+terminal it reopens that folder's latest session; in a script it continues that folder's
+latest unfinished task and then exits with that task's status. A task that stopped, crashed
+or was cut off with Ctrl+C goes on from its last step; a tool call that was cut off is not
+run again. In a folder with nothing to continue, `-c` runs nothing and names the folder of
+the latest unfinished task.
 
 Exit status of `mini_agent "task"`: 0 the agent finished (its answer says whether it
 managed); 1 stopped before the end (token budget, step limit, a model error, a task the

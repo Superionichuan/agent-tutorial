@@ -70,12 +70,14 @@ if [ -z "$UV" ]; then
 fi
 say "Using uv: $UV"
 
+BIN="$("$UV" tool dir --bin)" || fail "uv did not report its command folder"
+
 # --force: replace a mini_agent command left by an older installation (pip --user).
 # --reinstall: running this script again installs the current release.
-"$UV" tool install --force --reinstall --python "$PYTHON_VERSION" "$SPEC" \
+# The command folder on PATH for this one call only: uv then does not print its own advice
+# about PATH (the lines at the end of this script give it, once).
+PATH="$BIN:$PATH" "$UV" tool install --force --reinstall --python "$PYTHON_VERSION" "$SPEC" \
     || fail "uv could not install the package"
-
-BIN="$("$UV" tool dir --bin)" || fail "uv did not report its command folder"
 "$BIN/mini_agent" --version >/dev/null 2>&1 || fail "the mini_agent command does not start"
 
 # New terminals find the command once its folder is on PATH; uv adds it to your shell's

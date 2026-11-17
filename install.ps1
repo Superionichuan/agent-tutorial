@@ -60,16 +60,24 @@
     }
     Write-Host "Using uv: $uv"
 
+    $bin = & $uv tool dir --bin
+    if ($LASTEXITCODE -ne 0 -or -not $bin) { Stop-Install 'uv did not report its command folder' }
+    $bin = ([string]($bin | Select-Object -Last 1)).Trim()
+    # The command folder on this session's PATH before the install: uv then does not print its
+    # own advice about PATH, and `mini_agent` works in this window right away.
+    $windowPath = $env:Path
+    if (($env:Path -split ';') -notcontains $bin) { $env:Path = "$bin;$env:Path" }
+
     # --force: replace a mini_agent command left by an older installation (pip --user).
     # --reinstall: running this script again installs the current release.
     & $uv tool install --force --reinstall --python $PythonVersion $Spec
     if ($LASTEXITCODE -ne 0) { Stop-Install 'uv could not install the package' }
-
-    $bin = & $uv tool dir --bin
-    if ($LASTEXITCODE -ne 0 -or -not $bin) { Stop-Install 'uv did not report its command folder' }
-    $bin = ([string]($bin | Select-Object -Last 1)).Trim()
+    # New windows find the command once the folder is on your user PATH; update-shell sees the
+    # PATH this window started with, so it does not take the line above for that.
+    $withBin = $env:Path
+    $env:Path = $windowPath
     & $uv tool update-shell
-    if (($env:Path -split ';') -notcontains $bin) { $env:Path = "$bin;$env:Path" }
+    $env:Path = $withBin
 
     $exe = Join-Path $bin 'mini_agent.exe'
     # A command that is not found leaves $LASTEXITCODE unchanged, so check the file first.
