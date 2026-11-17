@@ -181,7 +181,11 @@ def test_bad_key_stops_after_one_call():
         r = cli("hello", env=env_for(server))
     finally:
         server.close()
-    assert r.returncode == 1 and "Answer: Error: HTTP 401: invalid api key" in r.stdout
+    assert r.returncode == 1 and "Error: HTTP 401: invalid api key" in r.stdout
+    # what to do next, and no internal line ("Action: None({... 'llm_error': True})")
+    assert "Check the key with `mini_agent doctor`, or run `mini_agent setup` again." in r.stdout
+    assert "llm_error" not in r.stdout and "Action:" not in r.stdout
+    assert r.stdout.count("HTTP 401") == 1
     assert len(server.requests) == 1 and "Traceback" not in r.stderr
 
 

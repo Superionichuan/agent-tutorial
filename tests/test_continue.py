@@ -77,7 +77,7 @@ def test_a_one_shot_run_is_logged():
         env = env_for(server)
         r = cli("What is 6*7?", env=env)
         assert r.returncode == 0 and "Answer: 42" in r.stdout, r.stdout + r.stderr
-        logs = list((Path(env["HOME"]) / ".mini_agent_sessions").glob("*.jsonl"))
+        logs = list((Path(env["MINI_AGENT_HOME"]) / "sessions").glob("*.jsonl"))
         assert len(logs) == 1
         types = [json.loads(line)["type"] for line in logs[0].read_text().splitlines()]
         assert types[0] == "user/message" and types[-1] == "turn/end"
@@ -96,7 +96,7 @@ def test_ctrl_c_in_a_one_shot_run_says_how_to_continue():
         proc = subprocess.Popen([sys.executable, "-m", "mini_agent", "--yes", "wait"], env=env,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, cwd=tempfile.mkdtemp())
-        log_dir = Path(env["HOME"]) / ".mini_agent_sessions"
+        log_dir = Path(env["MINI_AGENT_HOME"]) / "sessions"
         for _ in range(200):                         # wait until the tool call is under way
             logs = list(log_dir.glob("*.jsonl"))
             if logs and '"tool/call"' in logs[0].read_text():
@@ -138,12 +138,12 @@ def test_killed_mid_tool_then_continued():
             proc.wait(timeout=30)
         assert count.read_text() == "one\ntwo\n"
         r = cli("-c", "--yes", env=env, cwd=work)              # stdin closed: exits after the turn
-        assert "finished" in r.stdout, r.stdout + r.stderr
+        assert r.returncode == 0 and "finished" in r.stdout, r.stdout + r.stderr
         assert (Path(work) / "count.txt").read_text() == "one\ntwo\n"   # nothing ran twice
         assert len(server.requests) == 3
         told = server.requests[2]["messages"][0]["content"]
         assert "interrupted before this call finished" in told
-        log = sorted((Path(env["HOME"]) / ".mini_agent_sessions").glob("*.jsonl"))[-1]
+        log = sorted((Path(env["MINI_AGENT_HOME"]) / "sessions").glob("*.jsonl"))[-1]
         assert SessionLog(log).unfinished_turn() is None
     finally:
         server.close()

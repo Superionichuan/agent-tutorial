@@ -38,10 +38,12 @@ its file tools only reach paths inside the workspace. That limit is a
 convenience, not isolation: for real isolation, run mini_agent inside a
 virtual machine or container of your choice.
 
-Exit status of `mini_agent "task"`: 0 done; 1 stopped before the end (token budget,
-step limit, a model error, ...); 3 a risky call needs approval and there was no
-terminal to ask (`mini_agent -c --yes` continues); 2 a usage or set-up error;
-130 interrupted. After 1, 3 or 130, `mini_agent -c` continues the task.
+Exit status of `mini_agent "task"` (and of `mini_agent -c` with no terminal): 0 the
+agent finished (its answer says whether it managed); 1 stopped before the end (token
+budget, step limit, a model error, a task offline mode has no recording of, ...);
+3 a risky call needs approval and there was no terminal to ask (`mini_agent -c --yes`
+continues); 2 a usage or set-up error, or nothing for -c to continue in this folder;
+130 interrupted. After 1, 3 or 130, `mini_agent -c` in the same folder continues the task.
 """
 
 NO_MODEL = """\
@@ -62,7 +64,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("task", nargs=argparse.REMAINDER,
                    help="run this task and exit; without a task, start an interactive session")
     p.add_argument("-c", "--continue", dest="resume", action="store_true",
-                   help="continue the latest interactive session")
+                   help="continue the latest session of the current folder (with no terminal: "
+                        "its latest unfinished task, then exit)")
     p.add_argument("--tui", action="store_true", help="full-screen interface")
     p.add_argument("--coding", action="store_true",
                    help="coding prompt: read before writing, run and check the code")
@@ -178,15 +181,23 @@ def main(argv=None):
         except (RuntimeError, ValueError) as e:
             print(f"mini_agent: {e}", file=sys.stderr)
             return 2
+        if args.resume:
+            # -c works only on the current folder: it never runs another folder's task here
+            from ..terminal import stdin_is_terminal
+            from ..ui.common import nothing_to_continue
+            why = nothing_to_continue(args.workspace or os.getcwd(),
+                                      terminal=args.tui or stdin_is_terminal())
+            if why:
+                print(why, file=sys.stderr)
+                return 2
         if args.tui:
             # full textual UI (--tui)
             from ..ui.tui import MiniAgentApp
             MiniAgentApp(resume=args.resume, agent_options=options).run(inline=True, inline_no_clear=True)
-        else:
-            # default: plain CLI mode (no screen takeover; output goes to scrollback)
-            from ..ui.repl import run_repl
-            run_repl(resume=args.resume, agent_options=options)
-        return 0
+            return 0
+        # default: plain CLI mode (no screen takeover; output goes to scrollback)
+        from ..ui.repl import run_repl
+        return run_repl(resume=args.resume, agent_options=options)
 
     if args.resume:
         print("mini_agent: -c continues the latest session; use it without a task "
@@ -198,7 +209,8 @@ def main(argv=None):
     from ..core import Agent
     from ..core.agent.run import console_renderer
     from ..session import SessionLog
-    from ..ui.common import SESS_DIR, mark_message, new_session_path, stop_notice
+    from ..ui.common import (SESS_DIR, exit_status, folder_of, mark_message, new_session_path,
+                             stop_notice)
     goal = " ".join(args.task)
     print(f"Query: {goal}")
     print("-" * 40)
@@ -208,7 +220,8 @@ def main(argv=None):
         print(f"mini_agent: {e}", file=sys.stderr)
         return 2
     log = SessionLog(new_session_path(SESS_DIR))
-    mark_message(agent, log, log.append("user/message", content=goal)["seq"])
+    mark_message(agent, log, log.append("user/message", content=goal,
+                                        workspace=folder_of(agent))["seq"])
 
     ended = {}
 
@@ -218,6 +231,8 @@ def main(argv=None):
             ended["reason"] = data.get("reason")
             ended["notice"] = stop_notice(data)
             if ended["notice"]:        # the instruction says it all: no "-> stopped", no "Answer:"
+                if data.get("reason") == "llm_error":
+                    print(f"  {data.get('answer')}")     # the provider's message, then what to do
                 print(f"  {ended['notice']}")
                 return
         console_renderer(type, **data)
@@ -229,8 +244,7 @@ def main(argv=None):
     print("-" * 40)
     if not ended.get("notice"):
         print(f"Answer: {result}")
-    reason = ended.get("reason")
-    return 0 if reason == "done" else 3 if reason == "needs_approval" else 1
+    return exit_status(ended.get("reason"))
 
 
 if __name__ == "__main__":

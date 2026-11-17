@@ -33,5 +33,6 @@ def think(
     else:
         response = llm(prompt)
     if isinstance(response, LLMError):        # the call failed: no reply to parse
-        return str(response), None, {"error": str(response), "llm_error": True}
+        return str(response), None, {"error": str(response), "llm_error": True,
+                                     "stop": response.reason}
     return parse_response(response)

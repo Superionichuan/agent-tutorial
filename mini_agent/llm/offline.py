@@ -27,6 +27,13 @@ NO_RECORDING = ("[offline mode] No recorded response matches this prompt. Offlin
                 "provider and API key in the setup cell to run new prompts.")
 
 
+class NoRecording(LLMError):
+    """The reply to a prompt that was never recorded (its text is NO_RECORDING). Like a
+    failed call, it stops an agent run at once, with its own reason, instead of being
+    taken for a malformed reply and asked again."""
+    reason = "no_recording"
+
+
 def _section(prompt: str, name: str) -> str:
     m = re.search(r"\[" + re.escape(name) + r"\]\n(.*?)(?=\n\n\[|\Z)", prompt, re.S)
     return m.group(1).strip() if m else ""
@@ -113,13 +120,15 @@ class OfflineLLM(BaseLLM):
     def call(self, prompt: str) -> str:
         rec = self._match(prompt)
         if rec is None:
-            return NO_RECORDING
+            return NoRecording(NO_RECORDING)
         self.total_prompt_tokens += rec.get("prompt_tokens", 0)
         self.total_completion_tokens += rec.get("completion_tokens", 0)
         return rec["response"]
 
     def call_stream(self, prompt: str, on_chunk) -> str:
         text = self.call(prompt)
+        if isinstance(text, NoRecording):    # not a reply: nothing to stream
+            return text
         try:
             on_chunk(text, kind="content")
         except TypeError:

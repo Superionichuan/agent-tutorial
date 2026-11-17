@@ -37,11 +37,13 @@ from textual.widget import Widget
 from textual.widgets import Input, Rule, Static
 
 from ..core import Agent
+from ..core.agent.run import failed_call
 from ..core.policy import Approval, summarize_call
 from ..session import SessionLog
 from .common import (PLAN_GUIDANCE, SESS_DIR,  # noqa: F401 (also imported from here)
-                     compact_notice, latest_session, new_session_path, resume_state,
-                     mark_message, note_approval_now, session_conversation, stop_notice)
+                     compact_notice, folder_of, latest_session, new_session_path, provider_label,
+                     resume_state, mark_message, note_approval_now, session_conversation,
+                     shows_answer, stop_notice)
 
 
 
@@ -413,7 +415,8 @@ class MiniAgentApp(App):
         )
 
     def _latest_session(self):
-        return latest_session(SESS_DIR)
+        """The latest session of the agent's folder (-c never continues another folder's)."""
+        return latest_session(SESS_DIR, workspace=folder_of(self.agent))
 
     def _conversation_text(self, limit: int = 1600, until_seq=None) -> str:
         """Cross-turn context = a projection of the session log (resume includes history for free)."""
@@ -434,7 +437,7 @@ class MiniAgentApp(App):
             t, d = ev["type"], ev["data"]
             if t == "user/message":
                 self._append(UserMsg(d["content"]))
-            elif t == "step/think":
+            elif t == "step/think" and not failed_call(d):
                 self._append(ThinkMsg(d["step"], d["thought"],
                              f"↑{d.get('tokens_in',0):,} ↓{d.get('tokens_out',0):,}"))
             elif t == "tool/call":
@@ -450,24 +453,26 @@ class MiniAgentApp(App):
             elif t == "plan/mode":
                 self.plan_active = d["active"]   # state = fold of the log (resume recovers it)
             elif t == "turn/end":
-                m = AnswerMsg(d["answer"]); m._shown = len(m.content)
-                self._append(m)
+                if shows_answer(d):
+                    m = AnswerMsg(d["answer"]); m._shown = len(m.content)
+                    self._append(m)
+                else:
+                    self._append(NoteMsg(stop_notice(d), theme.WARNING))
 
     def on_mount(self):
+        options = dict(self.agent_options)
+        if options.get("approve") == "ask":
+            options["approve"] = Approval("ask", ask=self._ask_approval)
+        self.agent = Agent(use_memory=True, **options)
         latest = self._latest_session() if self.resume else None
         if latest is not None:
             self.session_log = SessionLog(latest)   # continue the same file
         else:
             self.session_log = SessionLog(new_session_path(SESS_DIR))
-        options = dict(self.agent_options)
-        if options.get("approve") == "ask":
-            options["approve"] = Approval("ask", ask=self._ask_approval)
-        self.agent = Agent(use_memory=True, **options)
-        backend = type(self.agent.llm).__name__.replace("LLM", "").lower()
         model = getattr(self.agent.llm, "model", "?")
         bar = self.query_one(StatusBar)
         bar.pet = self.pet
-        bar.set(model=f"{backend}·{model}")
+        bar.set(model=f"{provider_label(self.agent.llm)}·{model}")
         if latest is not None:
             self._rebuild_from_log()   # restore history view
             unfinished = self.session_log.unfinished_turn()
@@ -539,7 +544,8 @@ class MiniAgentApp(App):
         if self.plan_active:
             conversation = PLAN_GUIDANCE + conversation
         if unfinished is None:
-            event = self.session_log.append("user/message", content=goal)
+            event = self.session_log.append("user/message", content=goal,
+                                            workspace=folder_of(self.agent))
             mark_message(self.agent, self.session_log, event["seq"])
         def on_event(type: str, /, **d):
             self.session_log.append(type, **d)               # persist
@@ -582,8 +588,9 @@ class MiniAgentApp(App):
             self._drop_stream()  # finalize the live stream into a formatted Think line
             bar.set(steps=d["step"], tokens_in=d["tokens_in"],
                     tokens_out=d["tokens_out"])
-            self._append(ThinkMsg(d["step"], d["thought"],
-                                  f"↑{d['tokens_in']:,} ↓{d['tokens_out']:,}"))
+            if not failed_call(d):     # a failed call: the answer below says why
+                self._append(ThinkMsg(d["step"], d["thought"],
+                                      f"↑{d['tokens_in']:,} ↓{d['tokens_out']:,}"))
         elif type == "tool/call":
             card = ToolCard(d["name"], d["args"])
             self._cards[d["call_id"]] = card
@@ -600,7 +607,8 @@ class MiniAgentApp(App):
             self._append(NoteMsg(compact_notice(d), theme.INACTIVE))
         elif type == "turn/end":
             self._drop_stream()
-            self._append(AnswerMsg(d["answer"]))
+            if shows_answer(d):
+                self._append(AnswerMsg(d["answer"]))
             if stop_notice(d):
                 self._append(NoteMsg(stop_notice(d), theme.WARNING))
             bar.set(state="idle")

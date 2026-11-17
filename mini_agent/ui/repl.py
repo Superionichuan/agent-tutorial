@@ -15,12 +15,14 @@ from rich.markdown import Markdown
 from rich.text import Text
 
 from ..core import Agent
+from ..core.agent.run import failed_call
 from ..core.policy import Approval, NeedsApproval, summarize_call
 from ..terminal import stdin_is_terminal
 from ..session import SessionLog
 from . import pets, theme
-from .common import (PLAN_GUIDANCE, SESS_DIR, compact_notice, latest_session, new_session_path,
-                     mark_message, note_approval_now, resume_state, session_conversation,
+from .common import (PLAN_GUIDANCE, SESS_DIR, compact_notice, exit_status, folder_of,
+                     latest_session, mark_message, new_session_path, note_approval_now,
+                     provider_label, resume_state, session_conversation, shows_answer,
                      stop_notice)
 
 SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -121,7 +123,7 @@ def _rebuild(console, log):
             u.append("> ", style=f"bold {theme.SUBTLE}")
             u.append(d["content"], style=f"bold {theme.TEXT}")
             console.print(u)
-        elif t == "step/think":
+        elif t == "step/think" and not failed_call(d):
             _print_think(console, d)
         elif t == "tool/call":
             calls[d["call_id"]] = d
@@ -132,15 +134,22 @@ def _rebuild(console, log):
         elif t == "context/compact":
             console.print(Text(compact_notice(d), style=theme.INACTIVE))
         elif t == "turn/end":
-            console.print(Text("● ", style=f"bold {theme.ACCENT}")
-                          + Text(str(d["answer"]), style=theme.TEXT))
+            if shows_answer(d):
+                console.print(Text("● ", style=f"bold {theme.ACCENT}")
+                              + Text(str(d["answer"]), style=theme.TEXT))
+            else:
+                console.print(Text(stop_notice(d), style=theme.WARNING))
 
 
 ANSWERS = {"y": "yes", "yes": "yes", "a": "always", "always": "always"}
 
 
-def run_repl(resume: bool = False, agent_options: dict | None = None):
+def run_repl(resume: bool = False, agent_options: dict | None = None) -> int:
+    """The plain terminal mode. resume (-c): continue the latest session of the agent's
+    folder (with no terminal: its latest unfinished task, then exit with that task's
+    status, like a one-shot task). Returns the exit status."""
     console = Console()
+    terminal = stdin_is_terminal()
     live_now = []          # the Live display of the running turn, paused while asking
 
     def ask(action: str, args: dict) -> str:
@@ -164,14 +173,18 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
     options = dict(agent_options or {})
     if options.get("approve") == "ask":
         options["approve"] = Approval("ask", ask=ask)
-    latest = latest_session(SESS_DIR) if resume else None
-    log = SessionLog(latest or new_session_path(SESS_DIR))
     agent = Agent(use_memory=True, **options)
+    folder = folder_of(agent)
+    latest = latest_session(SESS_DIR, workspace=folder, unfinished=not terminal) if resume else None
+    if resume and latest is None and not terminal:
+        return 2                          # the command line says why (nothing_to_continue)
+    log = SessionLog(latest or new_session_path(SESS_DIR))
     pet = pets.choose_pet()
     plan_active = False
 
     if latest is not None:
-        _rebuild(console, log)
+        if terminal:                      # the history; with no terminal, just the task
+            _rebuild(console, log)
         for ev in log.events():
             if ev["type"] == "plan/mode":
                 plan_active = ev["data"]["active"]
@@ -190,9 +203,8 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
         console.print(Text("NTU · Schmidt Science · @shichuan", style=theme.SUBTLE))
         console.print(banner)
 
-    backend = type(agent.llm).__name__.replace("LLM", "").lower()
     model = getattr(agent.llm, "model", "?")
-    console.print(Text(f"{backend}·{model}", style=theme.SUBTLE))
+    console.print(Text(f"{provider_label(agent.llm)}·{model}", style=theme.SUBTLE))
 
     def conversation_text(limit=1600, until_seq=None):
         msgs = log.derive_messages(until_seq=until_seq)
@@ -204,16 +216,20 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
                 lines.append("Assistant: " + str(m["content"]))
         return "\n".join(lines)[-limit:]
 
-    def run_turn(goal, conversation, state=None):
-        """Run (or continue, with state) one turn, showing it live and logging every event."""
+    def run_turn(goal, conversation, state=None) -> str:
+        """Run (or continue, with state) one turn, showing it live and logging every event.
+        Returns how it ended: the turn/end reason, or "interrupted" / "error"."""
         status = LiveStatus()
         calls = {}
+        ended = {"reason": "error"}
         with Live(status, console=console, refresh_per_second=12,
                   transient=True) as live:
             live_now.append(live)
 
             def on_event(t, /, **d):
                 log.append(t, **d)
+                if t == "turn/end":
+                    ended["reason"] = d.get("reason")
                 if t == "step/start":
                     status.mode = "think"
                     status.verb = theme.pick_verb()
@@ -225,7 +241,7 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
                         status.reasoning += d["text"]
                     else:
                         status.text += d["text"]
-                elif t == "step/think":
+                elif t == "step/think" and not failed_call(d):
                     _print_think(live.console, d)
                 elif t == "tool/call":
                     calls[d["call_id"]] = d
@@ -239,8 +255,9 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
                 elif t == "context/compact":
                     live.console.print(Text(compact_notice(d), style=theme.INACTIVE))
                 elif t == "turn/end":
-                    live.console.print(Text("● Answer:", style=f"bold {theme.ACCENT}"))
-                    live.console.print(Markdown(str(d["answer"])))
+                    if shows_answer(d):
+                        live.console.print(Text("● Answer:", style=f"bold {theme.ACCENT}"))
+                        live.console.print(Markdown(str(d["answer"])))
                     if stop_notice(d):
                         live.console.print(Text(stop_notice(d), style=theme.WARNING))
 
@@ -249,19 +266,22 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
                 answer = agent.run(goal, on_event=on_event, conversation=conversation, **options)
                 agent.log(f"Q: {goal} -> A: {str(answer)[:120]}")
             except KeyboardInterrupt:
+                ended["reason"] = "interrupted"
                 live.console.print(Text("Interrupted. Type the next message, or later run "
                                         "`mini_agent -c` to continue this task.", style=theme.WARNING))
             except Exception as e:
+                ended["reason"] = "error"
                 live.console.print(Text(f"[internal error] {e}", style=theme.ERROR))
             finally:
                 live_now.pop()
+        return ended["reason"]
 
     if latest is not None:
         unfinished = log.unfinished_turn()
         if unfinished is not None:
             # -c: continue the task that did not finish, from its last completed step
             state = resume_state(unfinished)
-            note_approval_now(state, unfinished, options.get("approve"), stdin_is_terminal())
+            note_approval_now(state, unfinished, options.get("approve"), terminal)
             if state is None:                 # sent, but the program stopped before it began
                 note = f"Running the task sent before the program stopped: {unfinished['goal']}"
             else:
@@ -275,7 +295,11 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
                 conversation = PLAN_GUIDANCE + conversation
             if state is None:                 # its message is logged; record it in user.md once
                 mark_message(agent, log, unfinished.get("message_seq"))
-            run_turn(unfinished["goal"], conversation, state=state)
+            reason = run_turn(unfinished["goal"], conversation, state=state)
+            if not terminal:                  # like a one-shot task: no prompt, its status
+                return exit_status(reason)
+    if not terminal and resume:
+        return 2                              # nothing unfinished here (the command line said so)
 
     while True:
         try:
@@ -300,12 +324,13 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
         conversation = session_conversation(agent, log, conversation_text)
         if plan_active:
             conversation = PLAN_GUIDANCE + conversation
-        mark_message(agent, log, log.append("user/message", content=goal)["seq"])
+        mark_message(agent, log, log.append("user/message", content=goal, workspace=folder)["seq"])
         run_turn(goal, conversation)
+    return 0
 
 
-def main(resume: bool = False, agent_options: dict | None = None):
-    run_repl(resume=resume, agent_options=agent_options)
+def main(resume: bool = False, agent_options: dict | None = None) -> int:
+    return run_repl(resume=resume, agent_options=agent_options)
 
 
 if __name__ == "__main__":

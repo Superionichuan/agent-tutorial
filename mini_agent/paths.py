@@ -3,6 +3,7 @@
   config.env   settings written by `mini_agent setup` (keys, backend, model)
   memory/      long-term memory and daily logs
   skills/      skills you add (folders with a SKILL.md)
+  sessions/    one log per session or task (every prompt and reply); `mini_agent -c` reads them
 """
 import os
 from pathlib import Path

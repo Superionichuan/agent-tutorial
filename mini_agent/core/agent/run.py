@@ -14,6 +14,7 @@ Event protocol (same taxonomy as mini_agent.session):
     todo/write   {todos}                       (after a successful todo_write)
     turn/end     {answer, reason}   reason in: done | token_limit | max_steps | invalid_reply |
                                     llm_error (the model call failed: bad key, network, ...) |
+                                    no_recording (offline mode: no recorded reply matches) |
                                     context_full (lifecycle: even compacted, the prompt would
                                     not fit the model's window) |
                                     needs_approval (a risky call needs a yes and there is no
@@ -35,12 +36,18 @@ from .think import think
 from .check_done import is_done
 
 
+def failed_call(d: dict) -> bool:
+    """True for the step/think event of a model call that failed (no reply; the turn/end
+    that follows says why): renderers skip it."""
+    return d.get("action") is None and bool((d.get("args") or {}).get("llm_error"))
+
+
 def console_renderer(type: str, /, **d):
     """Default renderer: reproduces the plain print output."""
     if type == "context/compact":
         print(f"\n  [context compacted before step {d.get('step')}: {d.get('before_tokens', 0):,} -> "
               f"{d.get('after_tokens', 0):,} tokens, {d.get('method', '?')}]")
-    elif type == "step/think":
+    elif type == "step/think" and not failed_call(d):
         total = d["tokens_in"] + d["tokens_out"]
         print(f"\n[{d['name']} Step {d['step']}]")
         print(f"  Tokens: {d['tokens_in']:,} in + {d['tokens_out']:,} out = {total:,} total")
@@ -188,7 +195,7 @@ def run_agent(
 
             # 4. The model call failed (key, credit, network): stop now, say why
             if action is None and args.get("llm_error"):
-                emit("turn/end", answer=args["error"], reason="llm_error")
+                emit("turn/end", answer=args["error"], reason=args.get("stop") or "llm_error")
                 return args["error"]
 
             # 5. Invalid reply: nothing runs; the parse error is the observation

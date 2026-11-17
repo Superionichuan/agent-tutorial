@@ -87,7 +87,10 @@ def test_unrecorded_prompt_is_reported():
     ev = []
     ans = Agent(llm=off, use_memory=False, skills=[]).run(
         "A different goal", on_event=lambda t, **d: ev.append((t, d)))
-    assert "offline mode" in ans and [d for t, d in ev if t == "turn/end"][0]["reason"] == "invalid_reply"
+    # a miss is not a malformed reply: the run stops at once, with its own reason; the
+    # library keeps the notebook's wording (the command line shows its own sentence)
+    assert ans == NO_RECORDING and [d for t, d in ev if t == "turn/end"][0]["reason"] == "no_recording"
+    assert sum(t == "step/think" for t, _ in ev) == 1
 
 
 if __name__ == "__main__":

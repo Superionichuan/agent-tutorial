@@ -4,8 +4,11 @@ import re
 from pathlib import Path
 from typing import Optional
 
-# One JSONL event log per interactive session; `mini_agent -c` continues the latest.
-SESS_DIR = Path.home() / ".mini_agent_sessions"
+from .. import paths
+
+# One JSONL event log per session (an interactive session or a one-shot task);
+# `mini_agent -c` continues the latest one of the current folder.
+SESS_DIR = paths.home() / "sessions"
 
 PLAN_GUIDANCE = ("[Plan mode] You are in plan mode: explore and plan only; do not run tools "
                  "with side effects (file writes / mutating bash). Produce a complete step-by-step "
@@ -34,7 +37,34 @@ def stop_notice(d: dict) -> str:
         return ("The next step of this task does not fit in the model's context window, even "
                 "after compaction. Choose a model with a larger window and run `mini_agent -c`, "
                 "or start a smaller task.")
+    if d.get("reason") == "no_recording":
+        return ("Offline mode only replays the tutorial's recorded tasks; run `mini_agent setup` "
+                "to use a model.")
+    if d.get("reason") == "llm_error" and re.search(r"\bHTTP 40[13]\b", str(d.get("answer", ""))):
+        return "Check the key with `mini_agent doctor`, or run `mini_agent setup` again."
     return ""
+
+
+def provider_label(llm) -> str:
+    """The provider's name for the status line, as setup and doctor show it: openrouter,
+    deepseek, openai_compat, claude, ollama, offline, ..."""
+    if getattr(llm, "provider", None):
+        return llm.provider
+    name = type(llm).__name__.replace("LLM", "").lower()
+    return {"openaicompat": "openai_compat"}.get(name, name)
+
+
+def shows_answer(d: dict) -> bool:
+    """False for a turn/end whose answer is replaced by its stop notice on the command line:
+    an offline miss (the answer is the notebook's wording, for the library)."""
+    return d.get("reason") != "no_recording"
+
+
+def exit_status(reason) -> int:
+    """The exit status of the command for a task that ended with this turn/end reason:
+    0 done (the agent finished; its answer says whether it managed), 3 a risky call needs
+    approval and nobody could give it, 130 interrupted, 1 any other stop."""
+    return {"done": 0, "needs_approval": 3, "interrupted": 130}.get(reason, 1)
 
 
 def session_conversation(agent, log, plain_text, until_seq=None) -> str:
@@ -69,11 +99,23 @@ def _session_order(path: Path):
     return int(path.stat().st_mtime), 0, path.name
 
 
-def _has_message(path: Path) -> bool:
-    """True when the log holds a user message or a started turn. A session that was
-    opened and left without one (an empty file, or only a setting such as plan mode)
-    has nothing to continue."""
+def folder_of(agent) -> str:
+    """The agent's workspace as an absolute path: recorded with every user message, so
+    that `mini_agent -c` continues only a session of the folder it is run in."""
+    return str(Path(agent.workspace).resolve())
+
+
+def same_folder(a, b) -> bool:
+    """Two paths name the same folder (links resolved; case ignored on Windows)."""
+    return os.path.normcase(os.path.realpath(str(a))) == os.path.normcase(os.path.realpath(str(b)))
+
+
+def _scan(path: Path):
+    """(holds a user message or a started turn, the folder its last user message was sent
+    in, or None). A session that was opened and left without a message (an empty file, or
+    only a setting such as plan mode) has nothing to continue."""
     import json
+    found, folder = False, None
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -81,20 +123,82 @@ def _has_message(path: Path) -> bool:
                     event = json.loads(line)
                 except ValueError:
                     continue
-                if isinstance(event, dict) and event.get("type") in ("user/message", "turn/start"):
-                    return True
+                if not isinstance(event, dict) or event.get("type") not in ("user/message", "turn/start"):
+                    continue
+                found = True
+                data = event.get("data")
+                if event["type"] == "user/message" and isinstance(data, dict) \
+                        and isinstance(data.get("workspace"), str):
+                    folder = data["workspace"]
     except OSError:
-        return False
-    return False
+        return False, None
+    return found, folder
 
 
-def latest_session(directory: Optional[Path] = None) -> Optional[Path]:
-    """The most recent session log that holds a user message, or None."""
-    files = [p for p in (directory or SESS_DIR).glob("*.jsonl") if p.is_file() and p.stat().st_size > 0]
+def _sessions(directory: Optional[Path] = None):
+    """(path, folder) of every session log that holds a message, newest first."""
+    directory = directory or SESS_DIR
+    if not directory.is_dir():
+        return
+    files = [p for p in directory.glob("*.jsonl") if p.is_file() and p.stat().st_size > 0]
     for path in sorted(files, key=_session_order, reverse=True):
-        if _has_message(path):
-            return path
+        found, folder = _scan(path)
+        if found:
+            yield path, folder
+
+
+def _unfinished(path: Path) -> bool:
+    from ..session import SessionLog
+    return SessionLog(path).unfinished_turn() is not None
+
+
+def latest_session(directory: Optional[Path] = None, workspace=None,
+                   unfinished: bool = False) -> Optional[Path]:
+    """The most recent session log that holds a user message, or None.
+    workspace: only a session run in that folder (a log that does not record its folder
+    never matches); unfinished: only one whose last task did not finish."""
+    for path, folder in _sessions(directory):
+        if workspace is not None and (folder is None or not same_folder(folder, workspace)):
+            continue
+        if unfinished and not _unfinished(path):
+            continue
+        return path
     return None
+
+
+def latest_folder_elsewhere(workspace, directory: Optional[Path] = None,
+                            unfinished: bool = True) -> Optional[str]:
+    """The folder of the most recent session run in another folder than workspace (with an
+    unfinished task, when unfinished), or None: named when -c has nothing to continue here."""
+    for path, folder in _sessions(directory):
+        if folder is None or same_folder(folder, workspace):
+            continue
+        if unfinished and not _unfinished(path):
+            continue
+        return folder
+    return None
+
+
+def nothing_to_continue(workspace, terminal: bool, directory: Optional[Path] = None) -> str:
+    """Why `mini_agent -c` has nothing to continue in this folder, or "" when it has.
+    On a terminal it continues this folder's latest session; with no terminal, only an
+    unfinished task of this folder. It never acts on another folder: it names it."""
+    if latest_session(directory, workspace=workspace, unfinished=not terminal) is not None:
+        return ""
+    what = "session" if terminal else "unfinished task"
+    lines = [f"mini_agent -c: no {what} to continue in this folder ({Path(workspace).resolve()})."]
+    elsewhere = latest_folder_elsewhere(workspace, directory, unfinished=True)
+    if elsewhere is None and terminal:
+        elsewhere = latest_folder_elsewhere(workspace, directory, unfinished=False)
+        if elsewhere is not None:
+            lines.append(f"The latest session is in {elsewhere}: "
+                         "cd there and run `mini_agent -c`.")
+    elif elsewhere is not None:
+        lines.append(f"The latest unfinished task is in {elsewhere}: "
+                     "cd there and run `mini_agent -c`.")
+    if len(lines) == 1:
+        lines.append('Start one with `mini_agent "task"` or `mini_agent`.')
+    return "\n".join(lines)
 
 
 def resume_state(unfinished: dict):

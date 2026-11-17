@@ -21,9 +21,10 @@ class LLMError(str):
     """A failed model call: the text ("Error: ...") stands in for the reply.
 
     It is a str, so code that expects text keeps working; the agent loop sees
-    the type and stops the run with reason "llm_error" instead of treating the
-    error as a malformed reply and asking again.
+    the type and stops the run with its reason ("llm_error"; a subclass may name
+    another) instead of treating the error as a malformed reply and asking again.
     """
+    reason = "llm_error"
 
 
 def mask(value: str) -> str:
