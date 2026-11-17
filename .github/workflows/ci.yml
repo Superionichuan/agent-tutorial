@@ -1,7 +1,8 @@
 name: CI
 
 # Tests on Linux, macOS and Windows; the one-line install scripts on fresh machines;
-# on a version tag (v*), a GitHub release with the wheel that the install scripts download.
+# on a version tag (v*), a GitHub release with the wheel that the install scripts download
+# (a pre-release for a preview version such as 2.0.0.dev0 or 2.0.0rc1).
 
 on:
   push:
@@ -164,11 +165,25 @@ jobs:
         with:
           name: wheel
           path: wheelhouse
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/release-notes
       - name: Create the release, with the wheel the install scripts download
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: >
-          gh release create "$GITHUB_REF_NAME" wheelhouse/*.whl
-          --title "mini_agent ${GITHUB_REF_NAME#v}"
-          --notes "Install with one command: see Install in the README."
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          options=()
+          # A version with a pre-release or dev part (2.0.0.dev0, 2.0.0a1, 2.0.0b1, 2.0.0rc1) is a
+          # preview: a GitHub pre-release, which is never shown as the latest release.
+          if printf '%s\n' "$version" | grep -Eq '(a|b|rc)[0-9]+(\.dev[0-9]*)?$|\.?dev[0-9]*$'; then
+            options+=(--prerelease)
+          fi
+          notes=".github/release-notes/v$version.md"
+          if [ -f "$notes" ]; then
+            options+=(--notes-file "$notes")
+          else
+            options+=(--notes "Install with one command: see Install in the README.")
+          fi
+          gh release create "$GITHUB_REF_NAME" wheelhouse/*.whl --title "mini_agent $version" "${options[@]}"
