@@ -340,11 +340,15 @@ def test_optional_allows_null():
         "anyOf": [{"type": "integer"}, {"type": "null"}], "default": None}
 
 
-def test_a_none_default_the_type_rejects_is_left_out():
+def test_a_none_default_never_contradicts_the_type():
     @tool
     def f(x: int = None):
         return x
-    assert f.__tool__.parameters["properties"]["x"] == {"type": "integer"}
+    schema = f.__tool__.parameters["properties"]["x"]
+    # Python 3.10 reads "x: int = None" as Optional[int] (null allowed, default kept);
+    # 3.11 and later read it as int (no null, so the default is left out)
+    assert schema in ({"type": "integer"},
+                      {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": None})
     assert f.__tool__.parameters["required"] == []
 
 
