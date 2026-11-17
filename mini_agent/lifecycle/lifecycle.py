@@ -90,9 +90,9 @@ class Lifecycle:
         self._ended = False
         self._mark = self._usage()
 
-        def emit_and_follow(kind, **data):
-            emit(kind, **data)
-            if kind == "turn/end":
+        def emit_and_follow(event, /, **data):   # positional: events have a field named kind
+            emit(event, **data)
+            if event == "turn/end":
                 self.end(data.get("reason", ""), data.get("answer", ""))
         return emit_and_follow
 
@@ -341,9 +341,9 @@ class Lifecycle:
             out += ["", "## Stopped with", C.cut(str(answer), 500)]
         return "\n".join(out) + "\n"
 
-    def _event(self, kind: str, **data):
+    def _event(self, event: str, /, **data):
         if self._emit is not None:
-            self._emit(kind, **data)
+            self._emit(event, **data)
 
     def _warn(self, message: str):
         self._event("lifecycle/warning", message=message)

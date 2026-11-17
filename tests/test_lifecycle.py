@@ -295,6 +295,26 @@ def test_trim_and_fold_change_a_step_once():
     assert C.covered([summary, folded, step]) == 7
 
 
+def test_streamed_replies_pass_through(tmp_path, monkeypatch):
+    """A streaming backend emits assistant/chunk events with a field named kind."""
+    home(monkeypatch, tmp_path)
+
+    class Streaming(Scripted):
+        def call_stream(self, prompt, on_chunk):
+            text = self.call(prompt)
+            on_chunk("thinking about it", kind="reasoning")
+            on_chunk(text, kind="content")
+            return text
+
+    events = []
+    script = [("blob", {"n": i}) for i in range(1, 20)] + [("done", {"answer": "ok"})]
+    llm = Streaming(script, window=6000)
+    assert agent_for(tmp_path, llm).run("read", on_event=lambda t, **d: events.append((t, d))) == "ok"
+    chunks = kinds(events, "assistant/chunk")
+    assert {d["kind"] for d in chunks} == {"reasoning", "content"}
+    assert kinds(events, "context/compact")
+
+
 def test_lifecycle_none_sends_the_same_prompts(tmp_path, monkeypatch):
     home(monkeypatch, tmp_path)
     script = [("blob", {"n": 1}), ("calc", {"expr": "1+1"}), ("done", {"answer": "2"})]
