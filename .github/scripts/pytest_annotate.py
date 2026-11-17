@@ -24,12 +24,30 @@ def escape_property(text):
 
 
 def main():
+    # Windows runners write to a pipe in a legacy code page; a traceback with any other
+    # character would stop this script before it reports anything.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     report = os.path.join(tempfile.mkdtemp(), "report.xml")
     cmd = [sys.executable, "-m", "pytest", f"--junitxml={report}", "-o", "junit_family=xunit1",
            *sys.argv[1:]]
     code = subprocess.call(cmd)
-    if code == 0 or not os.path.exists(report):
+    if code == 0:
         return code
+    if not os.path.exists(report):
+        print(f"::error title=pytest::pytest stopped with exit code {code} before writing its report")
+        return code
+    try:
+        annotate(report)
+    except Exception as e:       # the test result must not be hidden by a reporting problem
+        print(f"::error title=pytest_annotate::could not read the report: {escape(repr(e))}")
+    return code
+
+
+def annotate(report):
     failures = []
     for case in ET.parse(report).getroot().iter("testcase"):
         for problem in list(case.findall("failure")) + list(case.findall("error")):
@@ -45,7 +63,6 @@ def main():
     if failures:
         listing = "\n".join(f[2] for f in failures)
         print(f"::error title={len(failures)} failed test(s)::{escape(listing[:6000])}")
-    return code
 
 
 if __name__ == "__main__":
