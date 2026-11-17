@@ -37,6 +37,11 @@ By default it asks before each risky call (bash, run_python, write_file), and
 its file tools only reach paths inside the workspace. That limit is a
 convenience, not isolation: for real isolation, run mini_agent inside a
 virtual machine or container of your choice.
+
+Exit status of `mini_agent "task"`: 0 done; 1 stopped before the end (token budget,
+step limit, a model error, ...); 3 a risky call needs approval and there was no
+terminal to ask (`mini_agent -c --yes` continues); 2 a usage or set-up error;
+130 interrupted. After 1, 3 or 130, `mini_agent -c` continues the task.
 """
 
 NO_MODEL = """\
@@ -221,7 +226,8 @@ def main(argv=None):
         return 130
     print("-" * 40)
     print(f"Answer: {result}")
-    return 3 if ended.get("reason") == "needs_approval" else 0   # 3: stopped, waiting for a yes
+    reason = ended.get("reason")
+    return 0 if reason == "done" else 3 if reason == "needs_approval" else 1
 
 
 if __name__ == "__main__":

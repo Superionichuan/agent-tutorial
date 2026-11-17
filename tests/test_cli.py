@@ -157,8 +157,13 @@ def test_bad_key_stops_after_one_call():
         r = cli("hello", env=env_for(server))
     finally:
         server.close()
-    assert r.returncode == 0 and "Answer: Error: HTTP 401: invalid api key" in r.stdout
+    assert r.returncode == 1 and "Answer: Error: HTTP 401: invalid api key" in r.stdout
     assert len(server.requests) == 1 and "Traceback" not in r.stderr
+
+
+def test_help_lists_the_exit_status():
+    r = cli("--help", env=env_for())
+    assert "Exit status" in r.stdout and "3 a risky call needs approval" in r.stdout
 
 
 def test_offline_recording_from_the_command_line():

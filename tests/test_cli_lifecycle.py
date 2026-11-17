@@ -80,7 +80,7 @@ def test_budget_stop_writes_a_handoff_and_c_continues_with_a_new_budget():
     env = env_for(server, MINI_AGENT_BUDGET="20")
     try:
         r = cli("--yes", "a long task", env=env, cwd=work)
-        assert r.returncode == 0, r.stderr
+        assert r.returncode == 1, r.stderr                  # stopped before the end
         assert "used up its token budget (30/20 tokens)" in r.stdout
         assert "`mini_agent -c` continues it with a new budget" in r.stdout
         handoff = (Path(work) / ".mini_agent" / "handoff.md").read_text(encoding="utf-8")
