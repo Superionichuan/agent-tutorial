@@ -14,6 +14,29 @@ your own API key (DeepSeek, Qwen, or Claude). The key stays in your Colab
 runtime and is sent only to the provider you select. Without a key, choose
 `offline`: every cell then runs from a recorded run of the notebook.
 
+## Install on your computer
+
+One command installs `mini_agent` in your user account (no administrator rights, no Python
+needed beforehand). It sets up [uv](https://docs.astral.sh/uv/), which brings its own
+Python 3.12, puts the `mini_agent` command on your PATH, and then asks for a provider and
+a key (`mini_agent setup`).
+
+macOS or Linux, in Terminal:
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/Superionichuan/agent-tutorial/main/install.sh | sh
+```
+
+Windows, in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/Superionichuan/agent-tutorial/main/install.ps1 | iex"
+```
+
+Then open a new terminal and run `mini_agent`. `mini_agent doctor` shows what is set up.
+Running the command again upgrades. To uninstall: `uv tool uninstall mini_agent` (your
+settings stay in `~/.mini_agent`; delete that folder to remove them too).
+
 ## Run locally
 
 ```bash
