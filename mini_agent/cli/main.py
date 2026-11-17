@@ -11,9 +11,12 @@ Options go before the task; everything after the first task word is the task.
 import argparse
 import os
 import sys
+from typing import Optional
 
 from .. import __version__
 from ..core.policy import POLICIES
+
+DEFAULT_BUDGET = 1_000_000      # tokens per task on the command line (with the lifecycle)
 
 SETUP_HELP = """\
 First time: `mini_agent setup` asks for a provider and a key and saves them in
@@ -66,6 +69,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="the directory the agent works in (default: the current directory)")
     p.add_argument("--no-confine", dest="confine", action="store_false",
                    help="let the file tools reach paths outside the workspace")
+    p.add_argument("--budget", type=int, metavar="TOKENS",
+                   help=f"stop a task after this many tokens (all its model calls together); "
+                        f"`mini_agent -c` then continues it (default {DEFAULT_BUDGET:,}, or "
+                        f"$MINI_AGENT_BUDGET)")
+    p.add_argument("--no-lifecycle", dest="lifecycle", action="store_false",
+                   help="no written memory, compaction or handoff (in <workspace>/.mini_agent): "
+                        "the plain loop, which stops when the context window is full")
     p.add_argument("--backend", metavar="NAME",
                    help="LLM backend or provider, e.g. openrouter, deepseek, claude, offline "
                         "(sets LLM_BACKEND)")
@@ -89,10 +99,35 @@ def setup_problem() -> str:
         return NO_MODEL
 
 
+def budget(args) -> Optional[int]:
+    """Tokens a task may use: --budget, else $MINI_AGENT_BUDGET, else DEFAULT_BUDGET with the
+    lifecycle (None without it: the agent's own limit, the context window)."""
+    if args.budget is not None:
+        value, where = args.budget, "--budget"
+    elif os.environ.get("MINI_AGENT_BUDGET", "").strip():
+        where = "MINI_AGENT_BUDGET"
+        try:
+            value = int(os.environ["MINI_AGENT_BUDGET"].replace(",", "").replace("_", ""))
+        except ValueError:
+            raise ValueError(f"MINI_AGENT_BUDGET must be a whole number of tokens, "
+                             f"not {os.environ['MINI_AGENT_BUDGET']!r}") from None
+    else:
+        return DEFAULT_BUDGET if args.lifecycle else None
+    if value <= 0:
+        raise ValueError(f"{where} must be a positive number of tokens")
+    return value
+
+
 def agent_options(args) -> dict:
-    """Agent(...) keyword arguments from the command-line options."""
-    return dict(approve="auto" if args.yes else args.approve, workspace=args.workspace,
-                confine=args.confine, prompt_name="coding" if args.coding else "agent")
+    """Agent(...) keyword arguments from the command-line options. The command line
+    runs with a lifecycle (written memory, compaction, handoff); the library does not."""
+    options = dict(approve="auto" if args.yes else args.approve, workspace=args.workspace,
+                   confine=args.confine, prompt_name="coding" if args.coding else "agent",
+                   lifecycle=True if args.lifecycle else None)
+    tokens = budget(args)
+    if tokens is not None:
+        options["max_tokens"] = tokens
+    return options
 
 
 def utf8_console():
@@ -123,7 +158,11 @@ def main(argv=None):
     if problem:
         print(problem, file=sys.stderr)
         return 2
-    options = agent_options(args)
+    try:
+        options = agent_options(args)
+    except ValueError as e:                      # a budget that is not a positive number
+        print(f"mini_agent: {e}", file=sys.stderr)
+        return 2
 
     if not args.task:
         if args.tui:
@@ -146,7 +185,7 @@ def main(argv=None):
     from ..core import Agent
     from ..core.agent.run import console_renderer
     from ..session import SessionLog
-    from ..ui.common import SESS_DIR, new_session_path
+    from ..ui.common import SESS_DIR, new_session_path, stop_notice
     goal = " ".join(args.task)
     print(f"Query: {goal}")
     print("-" * 40)
@@ -158,9 +197,11 @@ def main(argv=None):
     log = SessionLog(new_session_path(SESS_DIR))
     log.append("user/message", content=goal)
 
-    def on_event(type, **data):
+    def on_event(type, /, **data):
         log.append(type, **data)
         console_renderer(type, **data)
+        if type == "turn/end" and stop_notice(data):
+            print(f"  {stop_notice(data)}")
     try:
         result = agent.run(goal, on_event=on_event)
     except KeyboardInterrupt:

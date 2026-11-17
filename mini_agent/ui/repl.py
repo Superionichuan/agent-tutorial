@@ -18,7 +18,8 @@ from ..core import Agent
 from ..core.policy import Approval, summarize_call
 from ..session import SessionLog
 from . import pets, theme
-from .common import PLAN_GUIDANCE, SESS_DIR, latest_session, new_session_path, resume_state
+from .common import (PLAN_GUIDANCE, SESS_DIR, compact_notice, latest_session, new_session_path,
+                     resume_state, session_conversation, stop_notice)
 
 SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -126,6 +127,8 @@ def _rebuild(console, log):
             _print_tool(console, calls.pop(d["call_id"], {}), d)
         elif t == "todo/write":
             _print_todos(console, d["todos"])
+        elif t == "context/compact":
+            console.print(Text(compact_notice(d), style=theme.INACTIVE))
         elif t == "turn/end":
             console.print(Text("● ", style=f"bold {theme.CLAUDE}")
                           + Text(str(d["answer"]), style=theme.TEXT))
@@ -205,7 +208,7 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
                   transient=True) as live:
             live_now.append(live)
 
-            def on_event(t, **d):
+            def on_event(t, /, **d):
                 log.append(t, **d)
                 if t == "step/start":
                     status.mode = "think"
@@ -229,9 +232,13 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
                     status.mode = "think"
                 elif t == "todo/write":
                     _print_todos(live.console, d["todos"])
+                elif t == "context/compact":
+                    live.console.print(Text(compact_notice(d), style=theme.INACTIVE))
                 elif t == "turn/end":
                     live.console.print(Text("● Answer:", style=f"bold {theme.CLAUDE}"))
                     live.console.print(Markdown(str(d["answer"])))
+                    if stop_notice(d):
+                        live.console.print(Text(stop_notice(d), style=theme.WARNING))
 
             try:
                 options = {"state": state} if state is not None else {}
@@ -253,8 +260,9 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
             if state is None:                 # sent, but the program stopped before it began
                 note = f"Running the task sent before the program stopped: {unfinished['goal']}"
             else:
+                kept = len(state.steps)
                 note = (f"Continuing the unfinished task ({unfinished['reason']}, "
-                        f"{len(state.steps)} steps kept): {unfinished['goal']}")
+                        f"{kept} step{'' if kept == 1 else 's'} kept): {unfinished['goal']}")
             console.print(Text(note, style=theme.INACTIVE))
             conversation = conversation_text(until_seq=unfinished["before_seq"])
             if plan_active:
@@ -281,9 +289,7 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
                 continue
             goal = arg
 
-        if len(conversation_text(limit=999999)) > 2500:
-            log.compact(agent.llm)
-        conversation = conversation_text()
+        conversation = session_conversation(agent, log, conversation_text)
         if plan_active:
             conversation = PLAN_GUIDANCE + conversation
         log.append("user/message", content=goal)

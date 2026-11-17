@@ -31,9 +31,12 @@ from .think import think
 from .check_done import is_done
 
 
-def console_renderer(type: str, **d):
+def console_renderer(type: str, /, **d):
     """Default renderer: reproduces the plain print output."""
-    if type == "step/think":
+    if type == "context/compact":
+        print(f"\n  [context compacted before step {d.get('step')}: {d.get('before_tokens', 0):,} -> "
+              f"{d.get('after_tokens', 0):,} tokens, {d.get('method', '?')}]")
+    elif type == "step/think":
         total = d["tokens_in"] + d["tokens_out"]
         print(f"\n[{d['name']} Step {d['step']}]")
         print(f"  Tokens: {d['tokens_in']:,} in + {d['tokens_out']:,} out = {total:,} total")

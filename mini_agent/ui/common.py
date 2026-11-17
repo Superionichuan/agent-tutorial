@@ -12,6 +12,33 @@ PLAN_GUIDANCE = ("[Plan mode] You are in plan mode: explore and plan only; do no
                  "plan first (markdown, starting with a # heading) and wait for user confirmation.\n")
 
 
+def compact_notice(d: dict) -> str:
+    """One line for a context/compact event (the lifecycle slimmed the earlier steps)."""
+    return (f"✻ context compacted before step {d.get('step')}: {d.get('before_tokens', 0):,} → "
+            f"{d.get('after_tokens', 0):,} tokens ({d.get('method', '?')})")
+
+
+def stop_notice(d: dict) -> str:
+    """The line after a task that stopped on its token budget or step limit; "" otherwise."""
+    if d.get("reason") == "token_limit":
+        return (f"This task used up its token budget ({d.get('detail', '')} tokens). "
+                "`mini_agent -c` continues it with a new budget.")
+    if d.get("reason") == "max_steps":
+        return "This task reached its step limit. `mini_agent -c` continues it."
+    return ""
+
+
+def session_conversation(agent, log, plain_text) -> str:
+    """The earlier conversation of the session for the next task: with a lifecycle, within
+    its token budget (summarised by the model only when pruning is not enough); without
+    one, the old rule (compact the log when it passes 2,500 characters)."""
+    if getattr(agent, "lifecycle", None) is not None:
+        return agent.lifecycle.conversation(log)
+    if len(plain_text(limit=999999)) > 2500:
+        log.compact(agent.llm)
+    return plain_text()
+
+
 def _session_order(path: Path):
     """Sort key: <seconds>[_<n>] names (new_session_path) by seconds, then n as a number
     (so _100 comes after _99); any other name by its modification time."""

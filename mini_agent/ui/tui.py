@@ -40,7 +40,8 @@ from ..core import Agent
 from ..core.policy import Approval, summarize_call
 from ..session import SessionLog
 from .common import (PLAN_GUIDANCE, SESS_DIR,  # noqa: F401 (also imported from here)
-                     latest_session, new_session_path, resume_state)
+                     compact_notice, latest_session, new_session_path, resume_state,
+                     session_conversation, stop_notice)
 
 
 
@@ -49,6 +50,17 @@ from .common import (PLAN_GUIDANCE, SESS_DIR,  # noqa: F401 (also imported from 
 class Msg(Widget):
     """Message base: auto height; subclasses implement render()."""
     DEFAULT_CSS = "Msg { height: auto; margin: 1 0 0 0; }"
+
+
+class NoteMsg(Msg):
+    """One line from the program itself (a compaction, a stop), not from the model."""
+
+    def __init__(self, content: str, style: str):
+        super().__init__()
+        self.content, self.style_name = content, style
+
+    def render(self):
+        return Text(self.content, style=self.style_name)
 
 
 class UserMsg(Msg):
@@ -513,15 +525,13 @@ class MiniAgentApp(App):
                 options["state"] = state
             conversation = self._conversation_text(until_seq=unfinished["before_seq"])
         else:
-            # long-running: compact when the session grows too large
-            if len(self._conversation_text(limit=999999)) > 2500:
-                self.session_log.compact(self.agent.llm)
-            conversation = self._conversation_text()
+            # long-running: the earlier conversation within its budget
+            conversation = session_conversation(self.agent, self.session_log, self._conversation_text)
         if self.plan_active:
             conversation = PLAN_GUIDANCE + conversation
         if unfinished is None:
             self.session_log.append("user/message", content=goal)
-        def on_event(type: str, **d):
+        def on_event(type: str, /, **d):
             self.session_log.append(type, **d)               # persist
             self.call_from_thread(self._on_event, type, d)   # render on UI thread
         try:
@@ -576,9 +586,13 @@ class MiniAgentApp(App):
             card.set_result(d["content"], d["is_error"])
         elif type == "todo/write":
             self._append(TodoCard(d["todos"]))
+        elif type == "context/compact":
+            self._append(NoteMsg(compact_notice(d), theme.INACTIVE))
         elif type == "turn/end":
             self._drop_stream()
             self._append(AnswerMsg(d["answer"]))
+            if stop_notice(d):
+                self._append(NoteMsg(stop_notice(d), theme.WARNING))
             bar.set(state="idle")
 
 
