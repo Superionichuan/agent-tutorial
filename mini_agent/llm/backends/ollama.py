@@ -1,5 +1,6 @@
 """Ollama backend"""
 import httpx
+from .. import retry
 from ..base import BaseLLM, LLMError, LLMResponse
 
 
@@ -23,11 +24,11 @@ class OllamaLLM(BaseLLM):
     def _request(self, prompt: str) -> dict:
         """The response data, or {"error": LLMError} when the call failed"""
         try:
-            resp = httpx.post(
+            resp = retry.send(lambda: httpx.post(
                 f"{self.base_url}/api/generate",
                 json={"model": self.model, "prompt": prompt, "stream": False},
                 timeout=self.timeout
-            )
+            ), self.retry_waits, self._sleep)
         except httpx.HTTPError as e:
             return {"error": LLMError(f"Error: {type(e).__name__}: {e} (is an Ollama server running at {self.base_url}?)")}
         try:

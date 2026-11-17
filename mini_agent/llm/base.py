@@ -1,7 +1,10 @@
 """LLM base class"""
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
+
+from . import retry
 
 
 @dataclass
@@ -86,6 +89,11 @@ class BaseLLM(ABC):
 
     # native tool calling (tool_mode="native") available
     supports_tools: bool = False
+
+    # waits before trying again after a rate limit (429), a server error (5xx) or a
+    # timeout; () = never retry (llm/retry.py)
+    retry_waits = retry.WAITS
+    _sleep = staticmethod(time.sleep)
 
     @abstractmethod
     def call(self, prompt: str) -> str:

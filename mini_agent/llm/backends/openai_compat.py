@@ -14,7 +14,9 @@ AIza Gemini, sk-proj- / sk-svcacct- OpenAI, nvapi- NVIDIA. A plain "sk-" key
 is ambiguous (OpenAI, DeepSeek and DashScope all issue them) and is not guessed.
 
 Errors (network, HTTP, provider) come back as text starting with "Error:",
-like the other backends, so a run reports them instead of crashing.
+like the other backends, so a run reports them instead of crashing. A rate
+limit (429), a server error (5xx) or a timeout is first tried again, up to 3
+times with growing waits (llm/retry.py); a key echoed in an error is masked.
 """
 import itertools
 import json
@@ -24,6 +26,7 @@ from typing import Dict, List, Optional, Tuple
 
 import httpx
 
+from .. import retry
 from ..base import BaseLLM, ChatReply, LLMError, LLMResponse, ToolCall, redact
 
 
@@ -189,8 +192,9 @@ class OpenAICompatLLM(BaseLLM):
             return None, problem
         try:
             with httpx.Client(timeout=self.timeout, transport=self._transport) as client:
-                resp = client.post(f"{self.base_url}/chat/completions",
-                                   headers=self._headers(), json=body)
+                resp = retry.send(lambda: client.post(f"{self.base_url}/chat/completions",
+                                                      headers=self._headers(), json=body),
+                                  self.retry_waits, self._sleep)
         except httpx.HTTPError as e:
             return None, self._failed(f"Error: {type(e).__name__}: {e}")
         if resp.status_code >= 400:
@@ -295,36 +299,52 @@ class OpenAICompatLLM(BaseLLM):
                     continue
             return out
 
+        def read(resp) -> str:
+            """Read the events of one response; "" or the error that ends the reply."""
+            nonlocal events
+            block: List[str] = []
+            for line in itertools.chain(resp.iter_lines(), [""]):   # "" ends the last event
+                if line.startswith("data:"):
+                    block.append(line[5:])
+                    continue
+                if line and not line.startswith((":", "event:", "id:", "retry:")):
+                    other.append(line)                  # not part of a server-sent event
+                if line or not block:
+                    continue
+                for data in payloads(block):
+                    if data == "[DONE]":
+                        return ""
+                    events += 1
+                    error = handle(data)
+                    if error:
+                        return error
+                block = []
+            return ""
+
         try:
             with httpx.Client(timeout=self.timeout, transport=self._transport) as client:
-                with client.stream("POST", f"{self.base_url}/chat/completions",
-                                   headers=self._headers(), json=body) as resp:
-                    if resp.status_code != 200:
-                        reply.error = self._failed(_error(resp.status_code,
-                                                          resp.read().decode("utf-8", "replace")))
-                        return reply, used
-                    block: List[str] = []
-                    finished = False
-                    for line in itertools.chain(resp.iter_lines(), [""]):  # "" ends the last event
-                        if line.startswith("data:"):
-                            block.append(line[5:])
-                            continue
-                        if line and not line.startswith((":", "event:", "id:", "retry:")):
-                            other.append(line)              # not part of a server-sent event
-                        if line or not block:
-                            continue
-                        for data in payloads(block):
-                            if data == "[DONE]":
-                                finished = True
+                for attempt in range(len(self.retry_waits) + 1):
+                    last = attempt == len(self.retry_waits)
+                    other.clear()
+                    try:
+                        with client.stream("POST", f"{self.base_url}/chat/completions",
+                                           headers=self._headers(), json=body) as resp:
+                            if resp.status_code == 200:
+                                error = read(resp)
+                                if error:
+                                    reply.error = error
+                                    return reply, used
                                 break
-                            events += 1
-                            error = handle(data)
-                            if error:
-                                reply.error = error
+                            text = resp.read().decode("utf-8", "replace")
+                            if last or not retry.retryable(resp.status_code):
+                                reply.error = self._failed(_error(resp.status_code, text))
                                 return reply, used
-                        block = []
-                        if finished:
-                            break
+                            wait = retry.wait_before(attempt, resp, self.retry_waits)
+                    except httpx.TimeoutException:
+                        if last or events:      # part of the reply was shown: do not repeat it
+                            raise
+                        wait = retry.wait_before(attempt, None, self.retry_waits)
+                    self._sleep(wait)
         except httpx.HTTPError as e:
             reply.error = self._failed(f"Error: {type(e).__name__}: {e}")
             return reply, used
