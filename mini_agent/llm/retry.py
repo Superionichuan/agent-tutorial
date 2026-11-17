@@ -34,6 +34,21 @@ def wait_before(retry: int, response: Optional[httpx.Response] = None,
     return max(0.0, min(wait, MAX_WAIT))
 
 
+def complete(response: httpx.Response) -> httpx.Response:
+    """Read the body of a response requested with stream=True. When reading the body of a
+    final error (400, 401, 403, ...) times out, that error is returned without its message,
+    so it is not tried again; any other timeout is raised (and tried again, as a timeout)."""
+    try:
+        response.read()
+        return response
+    except httpx.TimeoutException:
+        response.close()
+        if response.status_code >= 400 and not retryable(response.status_code):
+            return httpx.Response(response.status_code, request=response.request,
+                                  content=b"(timed out while reading the error message)")
+        raise
+
+
 def send(request: Callable[[], httpx.Response], waits: Sequence[float] = WAITS,
          sleep: Callable[[float], None] = time.sleep) -> httpx.Response:
     """request() again after a retryable status or a timeout, at most len(waits) times.

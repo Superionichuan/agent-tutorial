@@ -116,7 +116,10 @@ def _json_type(tp) -> dict:
                 collections.abc.Set)
     if tp in sequence or origin in sequence:
         schema = {"type": "array"}
-        if origin is tuple and args and Ellipsis not in args and args != ((),):
+        if origin is tuple and tp is not typing.Tuple and args in ((), ((),)):
+            schema["maxItems"] = 0            # tuple[()]: the empty tuple (bare Tuple is any tuple)
+            return schema
+        if origin is tuple and args and Ellipsis not in args:
             # tuple[int, str]: a fixed length, one type per position
             schema["prefixItems"] = [_json_type(a) for a in args]
             schema["minItems"] = schema["maxItems"] = len(args)
@@ -272,23 +275,38 @@ def spec_from_function(fn: Callable, name: Optional[str] = None,
 
 def _by_keyword(fn: Callable, positional_only: List[str]) -> Callable:
     """fn(x, /) takes x only by position, but the model names every argument:
-    pass the named values of the positional-only parameters by position."""
+    pass the named values of the positional-only parameters by position. One that is
+    left out before a named one takes its default (f(x=1, y=2, /) called with y only)."""
+    params = inspect.signature(fn).parameters
+    defaults = {name: params[name].default for name in positional_only}
+
     @functools.wraps(fn)
     def call(*args, **kwargs):
         values = list(args)
-        for name in positional_only[len(values):]:
-            if name not in kwargs:
-                break                     # left out: its default applies (and any after it)
-            values.append(kwargs.pop(name))
+        names = positional_only[len(values):]
+        given = [i for i, name in enumerate(names) if name in kwargs]
+        for name in names[:given[-1] + 1 if given else 0]:
+            if name in kwargs:
+                values.append(kwargs.pop(name))
+            elif defaults[name] is not inspect.Parameter.empty:
+                values.append(defaults[name])
+            else:
+                raise TypeError(f"missing a required argument: {name!r}")
         return fn(*values, **kwargs)
     return call
 
 
+MAX_WRAPS = 256
+
+
 def _wraps_risky(fn: Any, builtins: Dict[int, "ToolSpec"]) -> bool:
     """Whether fn is, or wraps (functools.partial, functools.wraps, a ToolSpec), a tool
-    marked risky or a risky built-in."""
+    marked risky or a risky built-in. A chain longer than MAX_WRAPS counts as risky:
+    what it ends in was not checked."""
     seen = set()
-    while fn is not None and id(fn) not in seen and len(seen) < 32:
+    while fn is not None and id(fn) not in seen:
+        if len(seen) >= MAX_WRAPS:
+            return True                   # fail closed
         seen.add(id(fn))
         if isinstance(fn, ToolSpec):
             if fn.risky:

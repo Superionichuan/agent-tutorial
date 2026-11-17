@@ -86,6 +86,43 @@ def _error(status: int, text: str) -> str:
         return LLMError(f"Error: HTTP {status}: {text[:300]}")
 
 
+@dataclass(frozen=True)
+class _Corrupt:
+    """A server-sent event whose data is not JSON."""
+    text: str
+
+
+def _bad_usage(usage) -> str:
+    """"" when the usage field is absent or well-formed, else what is wrong with it.
+    Token counts feed the spending budget, so a count that is not a number is an error."""
+    if usage is None:
+        return ""
+    if not isinstance(usage, dict):
+        return "usage is not an object"
+    for name in ("prompt_tokens", "completion_tokens"):
+        value = usage.get(name)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+            return f"usage.{name} is not a whole number"
+    return ""
+
+
+def _bad_calls(calls) -> str:
+    """"" when the tool_calls field is absent or well-formed, else what is wrong with it."""
+    if calls is None:
+        return ""
+    if not isinstance(calls, list):
+        return "tool_calls is not a list"
+    for call in calls:
+        if not isinstance(call, dict):
+            return "a tool call is not an object"
+        fn = call.get("function")
+        if fn is not None and not isinstance(fn, dict):
+            return "a tool call's function is not an object"
+        if isinstance(fn, dict) and fn.get("name") is not None and not isinstance(fn["name"], str):
+            return "a tool call's name is not text"
+    return ""
+
+
 def _emit(on_chunk, text: str, kind: str):
     try:
         on_chunk(text, kind=kind)
@@ -192,9 +229,11 @@ class OpenAICompatLLM(BaseLLM):
             return None, problem
         try:
             with httpx.Client(timeout=self.timeout, transport=self._transport) as client:
-                resp = retry.send(lambda: client.post(f"{self.base_url}/chat/completions",
-                                                      headers=self._headers(), json=body),
-                                  self.retry_waits, self._sleep)
+                # stream=True, then read: a timeout while reading a final error's text must
+                # not turn that error into a retried timeout (retry.complete)
+                resp = retry.send(lambda: retry.complete(client.send(client.build_request(
+                    "POST", f"{self.base_url}/chat/completions", headers=self._headers(),
+                    json=body), stream=True)), self.retry_waits, self._sleep)
         except httpx.HTTPError as e:
             return None, self._failed(f"Error: {type(e).__name__}: {e}")
         if resp.status_code >= 400:
@@ -211,8 +250,11 @@ class OpenAICompatLLM(BaseLLM):
             return None, self._failed(_error(status, json.dumps(data)))
         choices = data.get("choices") if isinstance(data, dict) else None
         choice = choices[0] if isinstance(choices, list) and choices else None
-        if not isinstance(choice, dict) or not isinstance(choice.get("message") or {}, dict):
+        if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
             return None, self._failed(f"Error: unexpected reply: {str(data)[:200]}")
+        bad = _bad_usage(data.get("usage")) or _bad_calls(choice["message"].get("tool_calls"))
+        if bad:
+            return None, self._failed(f"Error: unexpected reply ({bad}): {str(data)[:200]}")
         return data, ""
 
     def _stream(self, body: dict, on_chunk) -> Tuple[ChatReply, Tuple[int, int]]:
@@ -228,16 +270,22 @@ class OpenAICompatLLM(BaseLLM):
         events = 0
         other: List[str] = []          # lines that are not server-sent events: an error page?
 
-        def unexpected(data) -> str:
-            return self._failed(f"Error: unexpected reply from the server: {str(data)[:200]}")
+        def unexpected(data, why: str = "") -> str:
+            return self._failed(f"Error: unexpected reply from the server"
+                                f"{f' ({why})' if why else ''}: {str(data)[:200]}")
 
         def handle(data) -> str:
             """Apply one event; returns "" or the error that ends the reply."""
             nonlocal used
+            if isinstance(data, _Corrupt):
+                return self._failed(f"Error: the server sent an event that is not JSON: {data.text[:200]}")
             if not isinstance(data, dict):
                 return unexpected(data)
             if "error" in data:
                 return self._failed(_error(200, json.dumps(data)))
+            bad = _bad_usage(data.get("usage"))
+            if bad:
+                return unexpected(data, bad)
             if data.get("usage"):
                 used = self._count(data["usage"])
             choices = data.get("choices") or []
@@ -247,6 +295,9 @@ class OpenAICompatLLM(BaseLLM):
                 delta = (choice.get("delta") or {}) if isinstance(choice, dict) else None
                 if not isinstance(delta, dict):
                     return unexpected(data)
+                bad = _bad_calls(delta.get("tool_calls"))
+                if bad:
+                    return unexpected(data, bad)
                 why = delta.get("reasoning_content") or delta.get("reasoning")
                 if isinstance(why, str) and why:
                     thinking.append(why)
@@ -293,10 +344,13 @@ class OpenAICompatLLM(BaseLLM):
                 if line.strip() == "[DONE]":
                     out.append("[DONE]")
                     break
+                if not line.strip():
+                    continue
                 try:
                     out.append(json.loads(line))
                 except ValueError:
-                    continue
+                    out.append(_Corrupt(line))   # never skipped: the reply would be silently cut
+                    break
             return out
 
         def read(resp) -> str:
@@ -326,6 +380,7 @@ class OpenAICompatLLM(BaseLLM):
                 for attempt in range(len(self.retry_waits) + 1):
                     last = attempt == len(self.retry_waits)
                     other.clear()
+                    events = 0
                     try:
                         with client.stream("POST", f"{self.base_url}/chat/completions",
                                            headers=self._headers(), json=body) as resp:
@@ -335,13 +390,16 @@ class OpenAICompatLLM(BaseLLM):
                                     reply.error = error
                                     return reply, used
                                 break
-                            text = resp.read().decode("utf-8", "replace")
+                            # a timeout while reading a final error's text is not retried
+                            text = retry.complete(resp).content.decode("utf-8", "replace")
                             if last or not retry.retryable(resp.status_code):
                                 reply.error = self._failed(_error(resp.status_code, text))
                                 return reply, used
                             wait = retry.wait_before(attempt, resp, self.retry_waits)
                     except httpx.TimeoutException:
-                        if last or events:      # part of the reply was shown: do not repeat it
+                        # part of the reply reached the caller: do not repeat it. Events that
+                        # carried nothing (only the role, say) do not count.
+                        if last or parts or thinking or calls:
                             raise
                         wait = retry.wait_before(attempt, None, self.retry_waits)
                     self._sleep(wait)

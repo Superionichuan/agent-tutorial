@@ -105,7 +105,8 @@ def main(argv: List[str]) -> int:
     else:
         from ..llm.factory import create_llm
         try:
-            llm = create_llm(config)
+            # no streaming: a streamed reply is printed as it arrives, before it could be masked
+            llm = create_llm({**config, "LLM_STREAM": "false"})
             where = getattr(llm, "base_url", "") or ""
             print(f"  {backend} · {getattr(llm, 'model', '?')}" + (f"  at {where}" if where else ""))
             if args.test:

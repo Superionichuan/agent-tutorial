@@ -93,8 +93,11 @@ def test_call(values: Dict[str, str]) -> Tuple[bool, str]:
     from ..llm.base import LLMError
     from ..llm.factory import create_llm
     secrets = [v for k, v in values.items() if k.endswith("_KEY")]
-    llm = create_llm(dict(values))
-    reply = llm("Reply with the single word: ready")
+    try:
+        llm = create_llm(dict(values))
+        reply = llm("Reply with the single word: ready")
+    except Exception as e:       # e.g. httpx.InvalidURL for "http://host:bad-port", a key mismatch
+        return False, redact(f"Error: {type(e).__name__}: {e}", *secrets)
     if isinstance(reply, LLMError) or str(reply).startswith("Error:"):
         return False, redact(str(reply), *secrets)
     return True, redact(str(reply).strip()[:80], *secrets)

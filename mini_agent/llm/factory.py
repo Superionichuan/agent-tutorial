@@ -179,12 +179,55 @@ def _key_provider(config: dict) -> Optional[str]:
     return "anthropic" if hint in ANTHROPIC_NAMES else hint
 
 
+# names in messages; the key variable to suggest for each target
+LABELS = {"anthropic": "Anthropic", "openrouter": "OpenRouter", "openai": "OpenAI", "deepseek": "DeepSeek",
+          "gemini": "Gemini", "groq": "Groq", "xai": "xAI", "nvidia": "NVIDIA", "qwen": "DashScope"}
+
+
+def _generic_key(config: dict, target: str, address_given: bool) -> str:
+    """LLM_API_KEY for the provider `target` ("anthropic" or a preset name).
+
+    A key whose prefix names another provider is never sent to `target`: that would hand one
+    provider's credential to another. Raises ValueError instead, unless the server address was
+    set explicitly (LLM_BASE_URL, DEEPSEEK_BASE_URL, ANTHROPIC_BASE_URL): then the key goes
+    where it was pointed (a gateway may accept other providers' keys).
+    """
+    key = config.get("LLM_API_KEY", "")
+    issuer = detect_provider(key)
+    if not issuer or issuer == target or address_given:
+        return key
+    if target != "anthropic" and PRESETS[target].local:
+        return ""                     # a server on this machine needs no key: send none
+    prefix ="sk-ant-" if issuer == "anthropic" else next(
+        p for p in PRESETS[issuer].key_prefixes if key.startswith(p))
+    variable = "ANTHROPIC_API_KEY" if target == "anthropic" else PRESETS[target].key_env[0]
+    raise ValueError(
+        f"LLM_API_KEY starts with {prefix} ({LABELS.get(issuer, issuer)}), so it is not sent to "
+        f"{LABELS.get(target, target)}. Use LLM_BACKEND={'claude' if issuer == 'anthropic' else issuer}, "
+        f"or set {variable} to your {LABELS.get(target, target)} key.")
+
+
 def _compat(provider: Optional[str], config: dict) -> OpenAICompatLLM:
     preset = PRESETS.get(provider) if provider else None
-    key = config.get("LLM_API_KEY") or next(
-        (config[k] for k in (preset.key_env if preset else ()) if config.get(k)), "")
+    url = config.get("LLM_BASE_URL") or None
+    specific = next((config[k] for k in (preset.key_env if preset else ()) if config.get(k)), "")
+    generic = config.get("LLM_API_KEY", "")
+    if generic and provider and not url and detect_provider(generic) not in (None, provider):
+        key = specific or _generic_key(config, provider, False)     # raises without a specific key
+    else:
+        key = generic or specific
     return OpenAICompatLLM(api_key=key, model=config.get("LLM_MODEL", ""),
-                           base_url=config.get("LLM_BASE_URL") or None, provider=provider)
+                           base_url=url, provider=provider)
+
+
+def _claude(config: dict, base_url: Optional[str]) -> ClaudeLLM:
+    return ClaudeLLM(
+        api_key=(config.get("ANTHROPIC_API_KEY") or config.get("CLAUDE_API_KEY")
+                 or _generic_key(config, "anthropic", bool(base_url))),
+        model=config.get("CLAUDE_MODEL", config.get("LLM_MODEL") or "claude-sonnet-4-20250514"),
+        stream=config.get("LLM_STREAM", "").lower() == "true",
+        base_url=base_url,
+    )
 
 
 def _create_live(backend: str, config: dict) -> BaseLLM:
@@ -197,20 +240,15 @@ def _create_live(backend: str, config: dict) -> BaseLLM:
         )
 
     if backend == "deepseek":
+        url = config.get("DEEPSEEK_BASE_URL") or None
         return DeepSeekLLM(
-            api_key=config.get("DEEPSEEK_API_KEY") or config.get("LLM_API_KEY", ""),
+            api_key=config.get("DEEPSEEK_API_KEY") or _generic_key(config, "deepseek", bool(url)),
             model=config.get("DEEPSEEK_MODEL", model or "deepseek-v4-flash"),
-            base_url=config.get("DEEPSEEK_BASE_URL") or None
+            base_url=url
         )
 
     if backend in ("claude", "anthropic"):
-        return ClaudeLLM(
-            api_key=(config.get("ANTHROPIC_API_KEY") or config.get("CLAUDE_API_KEY")
-                     or config.get("LLM_API_KEY", "")),
-            model=config.get("CLAUDE_MODEL", model or "claude-sonnet-4-20250514"),
-            stream=config.get("LLM_STREAM", "").lower() == "true",
-            base_url=config.get("ANTHROPIC_BASE_URL") or None
-        )
+        return _claude(config, config.get("ANTHROPIC_BASE_URL") or None)
 
     if backend == "ollama":
         return OllamaLLM(
@@ -220,10 +258,11 @@ def _create_live(backend: str, config: dict) -> BaseLLM:
 
     if backend in COMPAT_NAMES:
         if config.get("LLM_BASE_URL"):
-            # the address is given: LLM_PROVIDER only fills in defaults (model, key variable)
+            # the address is given: LLM_PROVIDER only fills in defaults (model, key variable);
+            # anthropic means the server speaks Anthropic's Messages API at that address
             provider = (config.get("LLM_PROVIDER") or "").strip().lower() or None
             if provider in ANTHROPIC_NAMES:
-                return _create_live("claude", config)
+                return _claude(config, config.get("ANTHROPIC_BASE_URL") or config["LLM_BASE_URL"])
             return _compat(provider, config)
         provider = _key_provider(config)
         if provider == "anthropic":

@@ -137,6 +137,9 @@ class SessionLog:
 
     # ---------- projection: the turn that did not finish ----------
 
+    # events that may sit between a user message and the turn it opens (not conversation)
+    BETWEEN = ("plan/mode", "todo/write", "compaction/summary")
+
     def unfinished_turn(self) -> dict | None:
         """The last turn, when it did not end with "done": cut off (no turn/end, the
         program was killed) or stopped (max_steps, token_limit, llm_error, ...).
@@ -149,12 +152,22 @@ class SessionLog:
             events      every event from the turn's first turn/start to the end
             before_seq  the last event before the turn (and its user message):
                         the conversation the turn started from
+            pending     True when the program stopped after logging a user message and
+                        before its turn began: events is empty; run it as a new turn
         """
         events = list(self.events())
         start = None
         for i, event in enumerate(events):
             if event["type"] == "turn/start" and not event["data"].get("resumed"):
                 start = i
+        last_turn = max((i for i, e in enumerate(events) if e["type"] in ("turn/start", "turn/end")),
+                        default=-1)
+        last_user = max((i for i, e in enumerate(events) if e["type"] == "user/message"), default=-1)
+        if last_user > last_turn and all(e["type"] in self.BETWEEN for e in events[last_user + 1:]):
+            # a task the user sent whose turn never began (nothing answered it)
+            return {"goal": events[last_user]["data"].get("content", ""), "reason": "interrupted",
+                    "events": [], "pending": True,
+                    "before_seq": events[last_user - 1]["seq"] if last_user > 0 else 0}
         if start is None:
             return None
         reason = "interrupted"
@@ -165,11 +178,13 @@ class SessionLog:
                 reason = event["data"].get("reason") or "interrupted"
         if reason == "done":
             return None
-        first = start
-        if first > 0 and events[first - 1]["type"] == "user/message":
-            first -= 1                        # the message that opened the turn is part of it
+        first, j = start, start - 1
+        while j >= 0 and events[j]["type"] in self.BETWEEN:
+            j -= 1
+        if j >= 0 and events[j]["type"] == "user/message":
+            first = j                         # the message that opened the turn is part of it
         return {"goal": events[start]["data"].get("goal", ""), "reason": reason,
-                "events": events[start:],
+                "events": events[start:], "pending": False,
                 "before_seq": events[first - 1]["seq"] if first > 0 else 0}
 
     # ---------- compaction: summarize old history into a checkpoint ----------

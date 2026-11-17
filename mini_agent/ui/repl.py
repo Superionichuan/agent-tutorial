@@ -250,9 +250,12 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
         if unfinished is not None:
             # -c: continue the task that did not finish, from its last completed step
             state = resume_state(unfinished)
-            console.print(Text(f"Continuing the unfinished task ({unfinished['reason']}, "
-                               f"{len(state.steps)} steps kept): {unfinished['goal']}",
-                               style=theme.INACTIVE))
+            if state is None:                 # sent, but the program stopped before it began
+                note = f"Running the task sent before the program stopped: {unfinished['goal']}"
+            else:
+                note = (f"Continuing the unfinished task ({unfinished['reason']}, "
+                        f"{len(state.steps)} steps kept): {unfinished['goal']}")
+            console.print(Text(note, style=theme.INACTIVE))
             conversation = conversation_text(until_seq=unfinished["before_seq"])
             if plan_active:
                 conversation = PLAN_GUIDANCE + conversation

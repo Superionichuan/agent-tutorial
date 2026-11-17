@@ -5,6 +5,30 @@ import time
 import httpx
 
 from .. import retry
+from ..base import mask
+
+
+class _Masked:
+    """Streamed text with the key replaced by its masked form before it is printed (a server
+    may echo the key). The end of the text that could be the start of the key is held back
+    until the next chunk shows whether it is."""
+
+    def __init__(self, secret: str):
+        self.secret = secret if secret and len(secret) >= 8 else ""
+        self.held = ""
+
+    def feed(self, text: str) -> str:
+        if not self.secret:
+            return text
+        s = (self.held + text).replace(self.secret, mask(self.secret))
+        keep = next((k for k in range(min(len(s), len(self.secret) - 1), 0, -1)
+                     if self.secret.startswith(s[-k:])), 0)
+        self.held = s[len(s) - keep:]
+        return s[:len(s) - keep]
+
+    def flush(self) -> str:
+        out, self.held = self.held, ""
+        return out
 
 
 def error_text(status: int, text: str) -> str:
@@ -21,7 +45,7 @@ def error_text(status: int, text: str) -> str:
 def stream_claude(api_key: str, model: str, prompt: str, timeout: int = 120, max_output_tokens: int = 16384,
                   url: str = "https://api.anthropic.com/v1/messages",
                   waits=retry.WAITS, sleep=time.sleep):
-    """Claude streaming, printing the text as it arrives.
+    """Claude streaming, printing the text as it arrives (with the key masked).
 
     Returns (content, input_tokens, output_tokens, error); error is "" or "Error: ...".
     A rate limit, a server error or a timeout before any text is tried again (llm/retry.py).
@@ -29,6 +53,7 @@ def stream_claude(api_key: str, model: str, prompt: str, timeout: int = 120, max
     content = ""
     input_tokens = 0
     output_tokens = 0
+    shown = _Masked(api_key)
 
     headers = {
         "x-api-key": api_key,
@@ -48,7 +73,8 @@ def stream_claude(api_key: str, model: str, prompt: str, timeout: int = 120, max
             try:
                 with client.stream("POST", url, headers=headers, json=body) as resp:
                     if resp.status_code != 200:
-                        text = resp.read().decode("utf-8", "replace")
+                        # a timeout while reading a final error's text is not retried
+                        text = retry.complete(resp).content.decode("utf-8", "replace")
                         if last or not retry.retryable(resp.status_code):
                             return content, input_tokens, output_tokens, error_text(resp.status_code, text)
                         wait = retry.wait_before(attempt, resp, waits)
@@ -70,7 +96,7 @@ def stream_claude(api_key: str, model: str, prompt: str, timeout: int = 120, max
                             if event_type == "content_block_delta":
                                 text = (event.get("delta") or {}).get("text", "")
                                 content += text
-                                print(text, end="", flush=True)
+                                print(shown.feed(text), end="", flush=True)
 
                             elif event_type == "message_start":
                                 usage = (event.get("message") or {}).get("usage") or {}
@@ -81,7 +107,7 @@ def stream_claude(api_key: str, model: str, prompt: str, timeout: int = 120, max
                                 output_tokens = usage.get("output_tokens", 0)
 
                             elif event_type == "error":
-                                print()
+                                print(shown.flush())
                                 return content, input_tokens, output_tokens, \
                                     error_text(200, json.dumps(event))
                         break
@@ -91,5 +117,5 @@ def stream_claude(api_key: str, model: str, prompt: str, timeout: int = 120, max
                 wait = retry.wait_before(attempt, None, waits)
             sleep(wait)
 
-    print()  # newline
+    print(shown.flush())  # the held-back end, then a newline
     return content, input_tokens, output_tokens, ""

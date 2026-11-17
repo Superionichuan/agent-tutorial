@@ -508,7 +508,9 @@ class MiniAgentApp(App):
         unfinished: a turn to continue (SessionLog.unfinished_turn()) instead of a new one."""
         options = {}
         if unfinished is not None:
-            options["state"] = resume_state(unfinished)
+            state = resume_state(unfinished)          # None: a pending task, run it afresh
+            if state is not None:
+                options["state"] = state
             conversation = self._conversation_text(until_seq=unfinished["before_seq"])
         else:
             # long-running: compact when the session grows too large
