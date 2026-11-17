@@ -1,6 +1,20 @@
-"""Memory management"""
+"""Memory management
+
+Memory files live in ~/.mini_agent/memory, or $MINI_AGENT_HOME/memory when that
+variable is set (not inside the installed package, where they were before 2.0).
+"""
+import os
+from contextvars import ContextVar
 from pathlib import Path
 from datetime import datetime
+
+# the memory of the agent that is running: the remember and log tools write there
+current: ContextVar = ContextVar("memory", default=None)
+
+
+def home() -> Path:
+    """mini_agent's own directory: $MINI_AGENT_HOME, else ~/.mini_agent"""
+    return Path(os.environ.get("MINI_AGENT_HOME") or Path.home() / ".mini_agent").expanduser()
 
 
 class Memory:
@@ -8,10 +22,9 @@ class Memory:
 
     def __init__(self, mem_dir: Path = None):
         if mem_dir is None:
-            # defaults to mem/ at the project root
-            mem_dir = Path(__file__).parent.parent.parent / "mem"
+            mem_dir = home() / "memory"
         self.mem_dir = Path(mem_dir)
-        self.mem_dir.mkdir(exist_ok=True)
+        self.mem_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def long_term_file(self) -> Path:
@@ -76,6 +89,10 @@ _default_mem = None
 
 
 def _get_mem() -> Memory:
+    """The running agent's memory, else a default one"""
+    running = current.get()
+    if running is not None:
+        return running
     global _default_mem
     if _default_mem is None:
         _default_mem = Memory()

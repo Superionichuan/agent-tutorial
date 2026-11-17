@@ -1,50 +1,138 @@
-"""CLI entry point
+"""Command line
 
-- no args: interactive mode (multi-turn)
-- with args: one-shot mode (backward compatible)
+  mini_agent                       interactive session in the terminal
+  mini_agent "task"                run one task and exit
+  mini_agent --tui                 full-screen interface
+
+Options go before the task; everything after the first task word is the task.
 """
+import argparse
+import os
 import sys
 
-from ..core import Agent
+from .. import __version__
+from ..core.policy import POLICIES
+
+SETUP_HELP = """\
+Choosing a model (environment variables, or a .env file in the current directory):
+  OPENROUTER_API_KEY=sk-or-...            many models through one key (openrouter.ai)
+  DEEPSEEK_API_KEY=sk-...                 DeepSeek
+  ANTHROPIC_API_KEY=sk-ant-...            Claude
+  OPENAI_API_KEY=sk-...                   OpenAI
+  LLM_BASE_URL=http://host:port/v1        any OpenAI-compatible server (vLLM, LM Studio, ...)
+  LLM_BACKEND=offline                     a recorded demo; no key, no network
+  LLM_MODEL=...                           the model, for any of the above
+Without any of these, a local Ollama server (ollama serve) is used.
+
+Safety: the agent can read and write files and run shell commands and Python.
+By default it asks before each risky call (bash, run_python, write_file), and
+its file tools only reach paths inside the workspace. --sandbox docker also
+puts bash and run_python in a container.
+"""
+
+NO_MODEL = """\
+mini_agent: no model is configured, and no local Ollama server is answering.
+Set one of these in the environment or in a .env file here, then run again:
+  OPENROUTER_API_KEY=sk-or-...     DEEPSEEK_API_KEY=sk-...     ANTHROPIC_API_KEY=sk-ant-...
+  LLM_BASE_URL=http://host:port/v1 and LLM_MODEL=...   (any OpenAI-compatible server)
+  LLM_BACKEND=offline              (a recorded demo; no key needed)
+More: mini_agent --help"""
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="mini_agent",
+        description="A small, readable agent: a language model in a think-act-observe loop "
+                    "with tools, memory and skills.",
+        epilog=SETUP_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("task", nargs=argparse.REMAINDER,
+                   help="run this task and exit; without a task, start an interactive session")
+    p.add_argument("-c", "--continue", dest="resume", action="store_true",
+                   help="continue the latest interactive session")
+    p.add_argument("--tui", action="store_true", help="full-screen interface")
+    p.add_argument("--coding", action="store_true",
+                   help="coding prompt: read before writing, run and check the code")
+    p.add_argument("--approve", choices=POLICIES, default="ask",
+                   help="risky tool calls (bash, run_python, write_file): ask before each "
+                        "(default), run without asking (auto), or never run them (deny)")
+    p.add_argument("-y", "--yes", action="store_true", help="same as --approve auto")
+    p.add_argument("--workspace", metavar="DIR",
+                   help="the directory the agent works in (default: the current directory)")
+    p.add_argument("--no-confine", dest="confine", action="store_false",
+                   help="let the file tools reach paths outside the workspace")
+    p.add_argument("--sandbox", choices=["docker"],
+                   help="run bash and run_python in a Docker container (the workspace is mounted)")
+    p.add_argument("--backend", metavar="NAME",
+                   help="LLM backend or provider, e.g. openrouter, deepseek, claude, offline "
+                        "(sets LLM_BACKEND)")
+    p.add_argument("--model", metavar="NAME", help="model name (sets LLM_MODEL)")
+    p.add_argument("--version", action="version", version=f"mini_agent {__version__}")
+    return p
+
+
+def setup_problem() -> str:
+    """NO_MODEL when nothing is configured and no local Ollama server answers; else ""."""
+    from ..llm.factory import choose_backend, load_config
+    config = load_config()
+    if choose_backend(config) != "ollama" or config.get("LLM_BACKEND") \
+            or config.get("OLLAMA_HOST") or config.get("OLLAMA_MODEL"):
+        return ""
+    import httpx
+    try:
+        httpx.get("http://localhost:11434/api/tags", timeout=1.0)
+        return ""
+    except httpx.HTTPError:
+        return NO_MODEL
+
+
+def agent_options(args) -> dict:
+    """Agent(...) keyword arguments from the command-line options."""
+    return dict(approve="auto" if args.yes else args.approve, workspace=args.workspace,
+                confine=args.confine, sandbox=args.sandbox,
+                prompt_name="coding" if args.coding else "agent")
+
+
+def main(argv=None):
     """Main entry"""
-    args = sys.argv[1:]
-    resume = False
-    use_tui = False
-    profile = "agent"
-    while args and args[0] in ("--continue", "-c", "--tui", "--coding"):
-        if args[0] == "--tui":
-            use_tui = True
-        elif args[0] == "--coding":
-            profile = "coding"
-        else:
-            resume = True
-        args = args[1:]
-    if not args:
-        if use_tui:
+    args = build_parser().parse_args(sys.argv[1:] if argv is None else argv)
+    if args.task and args.task[0] == "--":
+        args.task = args.task[1:]
+    if args.backend:
+        os.environ["LLM_BACKEND"] = args.backend
+    if args.model:
+        os.environ["LLM_MODEL"] = args.model
+    problem = setup_problem()
+    if problem:
+        print(problem, file=sys.stderr)
+        return 2
+    options = agent_options(args)
+
+    if not args.task:
+        if args.tui:
             # full textual UI (--tui)
             from ..ui.tui import MiniAgentApp
-            MiniAgentApp(resume=resume).run(inline=True, inline_no_clear=True)
+            MiniAgentApp(resume=args.resume, agent_options=options).run(inline=True, inline_no_clear=True)
         else:
             # default: plain CLI mode (no screen takeover; output goes to scrollback)
             from ..ui.repl import run_repl
-            run_repl(resume=resume)
-        return
-    sys.argv = [sys.argv[0]] + args
+            run_repl(resume=args.resume, agent_options=options)
+        return 0
 
     # one-shot mode
-    goal = " ".join(sys.argv[1:])
+    from ..core import Agent
+    goal = " ".join(args.task)
     print(f"Query: {goal}")
     print("-" * 40)
-
-    agent = Agent(prompt_name=profile)
+    try:
+        agent = Agent(**options)
+    except (RuntimeError, ValueError) as e:      # e.g. --sandbox docker without Docker
+        print(f"mini_agent: {e}", file=sys.stderr)
+        return 2
     result = agent.run(goal)
-
     print("-" * 40)
     print(f"Answer: {result}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

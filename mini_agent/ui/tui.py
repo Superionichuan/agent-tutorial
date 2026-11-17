@@ -19,6 +19,7 @@ Mechanics:
 """
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
@@ -31,10 +32,12 @@ from . import pets
 from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Input, Rule, Static
 
 from ..core import Agent
+from ..core.policy import Approval, summarize_call
 from ..session import SessionLog
 
 SESS_DIR = Path.home() / ".mini_agent_sessions"
@@ -329,6 +332,32 @@ class StatusBar(Static):
 
 # ---------- main app ----------
 
+class ApproveScreen(ModalScreen[str]):
+    """Asks whether a risky tool call may run: y yes, n no, a always for this tool."""
+
+    DEFAULT_CSS = """
+    ApproveScreen { align: center middle; }
+    ApproveScreen > Vertical { width: 90%; height: auto; max-height: 80%;
+                               border: round $warning; padding: 0 1; background: $surface; }
+    """
+    BINDINGS = [("y", "answer('yes')", "Yes"), ("n", "answer('no')", "No"),
+                ("escape", "answer('no')", "No"), ("a", "answer('always')", "Always")]
+
+    def __init__(self, action: str, summary: str):
+        super().__init__()
+        self.action, self.summary = action, summary
+
+    def compose(self) -> ComposeResult:
+        yield Vertical(
+            Static(Text(f"Allow {self.action}?", style="bold")),
+            Static(Text(self.summary)),
+            Static(Text("[y]es  [n]o  [a]lways for this tool", style="dim")),
+        )
+
+    def action_answer(self, value: str):
+        self.dismiss(value)
+
+
 class MiniAgentApp(App):
     """The interactive terminal UI for mini_agent."""
 
@@ -343,9 +372,10 @@ class MiniAgentApp(App):
     StatusBar { height: 1; }
     """
 
-    def __init__(self, resume: bool = False):
+    def __init__(self, resume: bool = False, agent_options: dict | None = None):
         super().__init__()
         self.resume = resume
+        self.agent_options = dict(agent_options or {})
         self.agent = None
         self.session_log = None
         self._cards: dict[str, ToolCard] = {}
@@ -417,7 +447,10 @@ class MiniAgentApp(App):
             self.session_log = SessionLog(latest)   # continue the same file
         else:
             self.session_log = SessionLog(SESS_DIR / f"{int(time.time())}.jsonl")
-        self.agent = Agent(use_memory=True)
+        options = dict(self.agent_options)
+        if options.get("approve") == "ask":
+            options["approve"] = Approval("ask", ask=self._ask_approval)
+        self.agent = Agent(use_memory=True, **options)
         backend = type(self.agent.llm).__name__.replace("LLM", "").lower()
         model = getattr(self.agent.llm, "model", "?")
         bar = self.query_one(StatusBar)
@@ -429,6 +462,19 @@ class MiniAgentApp(App):
             self._splash = PetSplash(self.pet)
             self._append(self._splash)
         self.query_one(Input).focus()
+
+    def _ask_approval(self, action: str, args: dict) -> str:
+        """Called on the worker thread: show ApproveScreen, wait for the answer."""
+        done, answer = threading.Event(), {}
+
+        def answered(value):
+            answer["value"] = value
+            done.set()
+
+        self.call_from_thread(lambda: self.push_screen(
+            ApproveScreen(action, summarize_call(action, args)), callback=answered))
+        done.wait()
+        return answer.get("value", "no")
 
     # ---- input submit -> run agent in background ----
 

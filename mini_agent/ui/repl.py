@@ -15,6 +15,7 @@ from rich.markdown import Markdown
 from rich.text import Text
 
 from ..core import Agent
+from ..core.policy import Approval, summarize_call
 from ..session import SessionLog
 from . import pets, theme
 from .tui import PLAN_GUIDANCE, SESS_DIR
@@ -130,15 +131,39 @@ def _rebuild(console, log):
                           + Text(str(d["answer"]), style=theme.TEXT))
 
 
-def run_repl(resume: bool = False):
+ANSWERS = {"y": "yes", "yes": "yes", "a": "always", "always": "always"}
+
+
+def run_repl(resume: bool = False, agent_options: dict | None = None):
     console = Console()
+    live_now = []          # the Live display of the running turn, paused while asking
+
+    def ask(action: str, args: dict) -> str:
+        live = live_now[-1] if live_now else None
+        if live is not None:
+            live.stop()
+        try:
+            console.print(Text(f"Allow {action}?", style=f"bold {theme.CLAUDE}"))
+            console.print(Text(summarize_call(action, args), style=theme.TEXT))
+            typed = console.input(Text("[y]es / [n]o / [a]lways for this tool: ",
+                                       style=theme.SUBTLE))
+        except (EOFError, KeyboardInterrupt):
+            typed = "n"
+        finally:
+            if live is not None:
+                live.start()
+        return ANSWERS.get(typed.strip().lower(), "no")
+
+    options = dict(agent_options or {})
+    if options.get("approve") == "ask":
+        options["approve"] = Approval("ask", ask=ask)
     SESS_DIR.mkdir(exist_ok=True)
     latest = None
     if resume:
         files = sorted(SESS_DIR.glob("*.jsonl"))
         latest = files[-1] if files else None
     log = SessionLog(latest or SESS_DIR / f"{int(time.time())}.jsonl")
-    agent = Agent(use_memory=True)
+    agent = Agent(use_memory=True, **options)
     pet = pets.choose_pet()
     plan_active = False
 
@@ -207,6 +232,7 @@ def run_repl(resume: bool = False):
         calls = {}
         with Live(status, console=console, refresh_per_second=12,
                   transient=True) as live:
+            live_now.append(live)
 
             def on_event(t, **d):
                 log.append(t, **d)
@@ -242,10 +268,12 @@ def run_repl(resume: bool = False):
                 agent.log(f"Q: {goal} -> A: {str(answer)[:120]}")
             except Exception as e:
                 live.console.print(Text(f"[internal error] {e}", style=theme.ERROR))
+            finally:
+                live_now.pop()
 
 
-def main(resume: bool = False):
-    run_repl(resume=resume)
+def main(resume: bool = False, agent_options: dict | None = None):
+    run_repl(resume=resume, agent_options=agent_options)
 
 
 if __name__ == "__main__":

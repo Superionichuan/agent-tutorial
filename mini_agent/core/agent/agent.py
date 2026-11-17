@@ -9,6 +9,7 @@ from ...tools import TOOLS, TOOL_DESC
 from ...tools.spec import ToolSet
 from ..policy import Approval
 from ...mem import Memory
+from ...mem import memory as _memory
 from ...skills import format_skills_prompt, list_skills
 from ...tools import workspace as _workspace
 
@@ -122,9 +123,11 @@ class Agent:
             pass  # a tool that uses the path reports the problem as data
         token = _workspace.current.set(self.config.workspace)  # relative tool paths start here
         limit = _workspace.confined.set(self.confine)        # file tools stay inside it
+        mem = _memory.current.set(self.memory)                # remember / log write here
         try:
             return self._run(goal, context, verbose, on_event, conversation)
         finally:
+            _memory.current.reset(mem)
             _workspace.confined.reset(limit)
             _workspace.current.reset(token)
 
