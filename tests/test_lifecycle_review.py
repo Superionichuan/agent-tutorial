@@ -108,7 +108,7 @@ def test_first_restored_prompt_matches_uninterrupted_prompt(tmp_path, monkeypatc
               lifecycle=lc, on_event=emit, verbose=False)
     # Restore the files and log prefix as they stood at the final model call.
     path = Path(directory) / '.mini_agent' / 'handoff.md'
-    path.write_text(saved_handoffs[-1], encoding='utf-8')
+    path.write_bytes(saved_handoffs[-1].encode('utf-8'))   # byte for byte, also on Windows
     restored = restore_steps(checkpoints[-1])
     actual = []
 

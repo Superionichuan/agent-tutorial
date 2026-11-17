@@ -7,8 +7,10 @@ Output is read as UTF-8, so text such as Chinese comes back intact.
 """
 import base64
 import os
+import re
 import shutil
 import subprocess
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -17,9 +19,45 @@ from ..workspace import cwd
 TIMEOUT = 120
 WINDOWS = os.name == "nt"
 
-# PowerShell writes in the console code page unless told otherwise
-_PS_UTF8 = ("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
-            "$OutputEncoding = [System.Text.Encoding]::UTF8; ")
+# No progress records (e.g. "Preparing modules for first use"), no colour codes in messages
+# (PowerShell 7); PowerShell writes in the console code page unless told otherwise
+_PS_PREFIX = ("$ProgressPreference = 'SilentlyContinue'; "
+              "if ($PSStyle) { $PSStyle.OutputRendering = 'PlainText' }; "
+              "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+              "$OutputEncoding = [System.Text.Encoding]::UTF8; ")
+_CLIXML = "#< CLIXML"
+_PS_ESCAPE = re.compile(r"_x([0-9A-Fa-f]{4})_")
+_PS_LABEL = {"warning": "WARNING: ", "verbose": "VERBOSE: ", "debug": "DEBUG: "}
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def from_clixml(err: str) -> str:
+    """The text of PowerShell's error output.
+
+    Started with -EncodedCommand, PowerShell writes its error, warning and progress streams
+    to stderr as CLIXML. This keeps the text of the messages and drops progress records;
+    anything else comes back unchanged.
+    """
+    text = err.lstrip("﻿ \t\r\n")
+    if not text.startswith(_CLIXML):
+        return err
+    parts = []
+    for block in text.split(_CLIXML):
+        if not block.strip():
+            continue
+        try:
+            root = ET.fromstring(block.strip())
+        except ET.ParseError:
+            return err
+        for element in root:
+            if element.tag.rsplit("}", 1)[-1] == "S" and element.text:
+                piece = _PS_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), element.text)
+                label = _PS_LABEL.get((element.get("S") or "").lower())
+                if label:                    # one record per element, as the console shows it
+                    piece = label + piece + ("" if piece.endswith("\n") else "\n")
+                parts.append(piece)
+    joined = "".join(parts).encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    return _ANSI.sub("", joined).replace("\r\n", "\n")
 
 
 def _git_bash() -> Optional[str]:
@@ -67,7 +105,7 @@ def command_line(cmd: str) -> list:
     """The argument list that runs cmd in the shell."""
     kind, exe = shell()
     if kind == "powershell":
-        script = base64.b64encode((_PS_UTF8 + cmd).encode("utf-16-le")).decode("ascii")
+        script = base64.b64encode((_PS_PREFIX + cmd).encode("utf-16-le")).decode("ascii")
         return [exe, "-NoProfile", "-NonInteractive", "-EncodedCommand", script]
     return [exe, "-c", cmd]
 
@@ -89,7 +127,7 @@ def bash(cmd: str) -> str:
     try:
         result = subprocess.run(command_line(cmd), capture_output=True, timeout=TIMEOUT,
                                 cwd=cwd(), env=utf8_env())
-        output = decode(result.stdout) + decode(result.stderr)
+        output = decode(result.stdout) + from_clixml(decode(result.stderr))
         return output if output else "OK"
     except subprocess.TimeoutExpired:
         return "Error: timeout"

@@ -2,6 +2,7 @@
 
 Run: python tests/test_workspace.py
 """
+import importlib
 import os
 import sys
 import tempfile
@@ -14,6 +15,8 @@ from mini_agent import Agent
 from mini_agent.tools import TOOLS
 from mini_agent.tools import workspace
 from test_harness import J, ScriptedLLM
+
+shell_mod = importlib.import_module("mini_agent.tools.shell.bash")   # the module, not bash()
 
 
 def run(replies, ws, **options):
@@ -38,12 +41,19 @@ def test_relative_read_and_list():
     assert res[0] == "42" and "data.txt" in res[1]
 
 
+def native(path):
+    return os.path.normcase(os.path.realpath(path.strip()))
+
+
 def test_shell_runs_in_workspace():
     ws = os.path.realpath(tempfile.mkdtemp())
-    res = run([J("bash", {"cmd": "pwd"}),
+    kind = shell_mod.shell()[0]                      # Git Bash: pwd -W gives C:/Users/...
+    where = ("(Get-Location).Path" if kind == "powershell"
+             else "pwd -W" if os.name == "nt" else "pwd")
+    res = run([J("bash", {"cmd": where}),
                J("run_python", {"code": "import os; print(os.getcwd())"}),
                J("done", {"answer": "ok"})], ws)
-    assert os.path.realpath(res[0].strip()) == ws and os.path.realpath(res[1].strip()) == ws
+    assert native(res[0]) == os.path.normcase(ws) and native(res[1]) == os.path.normcase(ws)
 
 
 def test_absolute_path_outside_is_refused_unless_confine_is_off():
@@ -80,7 +90,10 @@ def test_missing_workspace_is_created():
 
 
 def test_uncreatable_workspace_does_not_crash():
-    res = run([J("list_dir", {"path": "."}), J("done", {"answer": "ok"})], "/proc/no/such/ws")
+    fd, blocker = tempfile.mkstemp()                 # a file where a folder would have to be
+    os.close(fd)
+    res = run([J("list_dir", {"path": "."}), J("done", {"answer": "ok"})],
+              os.path.join(blocker, "no", "ws"))
     assert res[0].startswith("Error")
 
 

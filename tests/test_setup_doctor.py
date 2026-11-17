@@ -2,6 +2,7 @@
 import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -214,6 +215,58 @@ def test_powershell_command_is_encoded(monkeypatch):
     assert argv[1:4] == ["-NoProfile", "-NonInteractive", "-EncodedCommand"]
     script = base64.b64decode(argv[4]).decode("utf-16-le")
     assert script.endswith('Write-Output "你好 $((1))"') and "UTF8" in script
+    assert script.startswith("$ProgressPreference = 'SilentlyContinue'; ")
+
+
+PS_NS = 'xmlns="http://schemas.microsoft.com/powershell/2004/04"'
+PS_PROGRESS = (f'#< CLIXML\r\n<Objs Version="1.1.0.1" {PS_NS}><Obj S="progress" RefId="0">'
+               '<TN RefId="0"><T>System.Management.Automation.PSCustomObject</T>'
+               '<T>System.Object</T></TN><MS><I64 N="SourceId">1</I64><PR N="Record">'
+               '<AV>Preparing modules for first use.</AV><AI>0</AI><Nil /><PI>-1</PI>'
+               '<PC>-1</PC><T>Completed</T><SR>-1</SR><SD> </SD></PR></MS></Obj></Objs>')
+
+
+def test_powershell_progress_records_are_dropped():
+    assert shell_mod.from_clixml(PS_PROGRESS) == ""
+
+
+def test_powershell_errors_come_back_as_text():
+    err = (f'#< CLIXML\r\n<Objs Version="1.1.0.1" {PS_NS}>'
+           "<S S=\"Error\">Get-Item : Cannot find path 'C:\\nope' because it does not exist."
+           "_x000D__x000A_</S><S S=\"Error\">At line:1 char:1 _x00E4__x000D__x000A_</S></Objs>")
+    assert shell_mod.from_clixml(err) == (
+        "Get-Item : Cannot find path 'C:\\nope' because it does not exist.\n"
+        "At line:1 char:1 \u00e4\n")
+
+
+def test_powershell_warnings_keep_their_label_and_colours_are_removed():
+    err = (f'#< CLIXML\n<Objs Version="1.1.0.1" {PS_NS}><S S="warning">careful</S>'
+           '<S S="Error">_x001B_[31;1mWrite-Error: _x001B_[31;1mplain_x001B_[0m_x000A_</S></Objs>')
+    assert shell_mod.from_clixml(err) == "WARNING: careful\nWrite-Error: plain\n"
+
+
+@pytest.mark.skipif(not shutil.which("pwsh"), reason="needs PowerShell 7 (pwsh)")
+def test_real_powershell_output_is_plain_text(monkeypatch):
+    monkeypatch.setenv("MINI_AGENT_SHELL", shutil.which("pwsh"))
+    assert shell_mod.bash('Write-Output "你好"').strip() == "你好"
+    out = shell_mod.bash("Write-Warning careful; Get-Item ./no/such/file; Write-Output after")
+    assert "CLIXML" not in out and "\x1b" not in out and "after" in out
+    assert "WARNING: careful" in out and "Cannot find path" in out
+
+
+def test_other_error_output_is_unchanged():
+    for err in ("", "bash: nope: command not found\n", "#< CLIXML\r\n<Objs><S>cut short"):
+        assert shell_mod.from_clixml(err) == err
+
+
+def test_powershell_output_without_progress_noise(monkeypatch):
+    class Done:
+        stdout = "你好\r\n".encode("utf-8")
+        stderr = PS_PROGRESS.encode("utf-8")
+
+    monkeypatch.setenv("MINI_AGENT_SHELL", "powershell")
+    monkeypatch.setattr(shell_mod.subprocess, "run", lambda *a, **k: Done())
+    assert shell_mod.bash('Write-Output "你好"') == "你好\r\n"
 
 
 def test_shell_override_and_utf8_output(monkeypatch):
@@ -230,6 +283,8 @@ def test_windows_shells_and_paths(monkeypatch, tmp_path):
     assert kind in ("bash", "powershell") and "system32\\bash" not in exe.lower()
     monkeypatch.setenv("MINI_AGENT_SHELL", "powershell")
     assert shell_mod.bash('Write-Output "你好"').strip() == "你好"
+    out = shell_mod.bash("Get-Item C:\\no\\such\\file")       # Windows PowerShell 5.1
+    assert "CLIXML" not in out and "Cannot find path" in out
     from mini_agent.tools import read_file, workspace
     ws = tmp_path / "ws"
     ws.mkdir()
