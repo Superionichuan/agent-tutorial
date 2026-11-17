@@ -1,4 +1,6 @@
 """Claude backend"""
+from typing import Optional
+
 import httpx
 from ..base import BaseLLM, LLMResponse
 from .claude_stream import stream_claude
@@ -35,7 +37,8 @@ class ClaudeLLM(BaseLLM):
         model: str = "claude-sonnet-4-20250514",
         timeout: int = 120,
         stream: bool = False,
-        max_output_tokens: int = 0
+        max_output_tokens: int = 0,
+        base_url: Optional[str] = None,
     ):
         self.api_key = api_key
         self.model = model
@@ -45,10 +48,16 @@ class ClaudeLLM(BaseLLM):
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
         self.context_limit = 200_000
+        self._base_url = base_url
+
+    @property
+    def base_url(self) -> str:
+        """base_url=..., else the class attribute BASE_URL"""
+        return (self._base_url or type(self).BASE_URL).rstrip("/")
 
     def _request(self, prompt: str) -> dict:
         resp = httpx.post(
-            f"{self.BASE_URL}/messages",
+            f"{self.base_url}/messages",
             headers={
                 "x-api-key": self.api_key,
                 "anthropic-version": "2023-06-01",
@@ -66,7 +75,8 @@ class ClaudeLLM(BaseLLM):
     def call(self, prompt: str) -> str:
         if self.stream:
             content, inp, out = stream_claude(
-                self.api_key, self.model, prompt, self.timeout, self.max_output_tokens
+                self.api_key, self.model, prompt, self.timeout, self.max_output_tokens,
+                url=f"{self.base_url}/messages"
             )
             self.total_prompt_tokens += inp
             self.total_completion_tokens += out

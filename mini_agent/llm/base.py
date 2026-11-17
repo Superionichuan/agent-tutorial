@@ -1,7 +1,7 @@
 """LLM base class"""
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Any, List, Optional
 
 
 @dataclass
@@ -14,8 +14,39 @@ class LLMResponse:
     model: str = ""
 
 
+@dataclass
+class ToolCall:
+    """One tool call requested by the model in native tool-calling mode.
+
+    args is the parsed argument object; error is set (and args is {}) when the
+    model's arguments were not a JSON object.
+    """
+    name: str
+    args: dict = field(default_factory=dict)
+    id: str = ""
+    error: str = ""
+
+
+@dataclass
+class ChatReply:
+    """A reply in native tool-calling mode: text, tool calls, or both.
+
+    error: a transport or provider error ("Error: ..."); nothing else is set then.
+    """
+    content: str = ""
+    tool_calls: List[ToolCall] = field(default_factory=list)
+    reasoning: str = ""
+    finish_reason: str = ""
+    error: str = ""
+
+
 class BaseLLM(ABC):
-    """LLM interface"""
+    """LLM interface
+
+    call(prompt) -> str is all the default (JSON-in-text) mode needs. Backends
+    that support native tool calling also implement
+    chat(prompt, tools, on_chunk=None) -> ChatReply and set supports_tools.
+    """
 
     # cumulative token counters
     total_prompt_tokens: int = 0
@@ -24,9 +55,17 @@ class BaseLLM(ABC):
     # context limit (set by subclass)
     context_limit: int = 128_000
 
+    # native tool calling (tool_mode="native") available
+    supports_tools: bool = False
+
     @abstractmethod
     def call(self, prompt: str) -> str:
         pass
+
+    def chat(self, prompt: str, tools: List[Any], on_chunk=None) -> ChatReply:
+        """Native tool calling: one user message, the tools offered, one reply."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support native tool calling; use tool_mode='json'")
 
     def call_with_usage(self, prompt: str) -> LLMResponse:
         """Call and return token usage (subclasses may override)"""

@@ -4,7 +4,8 @@ import json
 import sys
 
 
-def stream_claude(api_key: str, model: str, prompt: str, timeout: int = 120, max_output_tokens: int = 16384):
+def stream_claude(api_key: str, model: str, prompt: str, timeout: int = 120, max_output_tokens: int = 16384,
+                  url: str = "https://api.anthropic.com/v1/messages"):
     """Claude streaming; returns (content, input_tokens, output_tokens)"""
     content = ""
     input_tokens = 0
@@ -19,7 +20,7 @@ def stream_claude(api_key: str, model: str, prompt: str, timeout: int = 120, max
     with httpx.Client(timeout=timeout) as client:
         with client.stream(
             "POST",
-            "https://api.anthropic.com/v1/messages",
+            url,
             headers=headers,
             json={
                 "model": model,
