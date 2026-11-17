@@ -93,9 +93,12 @@ def test_ctrl_c_in_a_one_shot_run_says_how_to_continue():
     server = FakeServer([step])
     try:
         env = env_for(server)
+        # SIGINT back to its default in the child: a test run started as a background job
+        # inherits "ignore SIGINT", and the child would not see the Ctrl+C at all
         proc = subprocess.Popen([sys.executable, "-m", "mini_agent", "--yes", "wait"], env=env,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, cwd=tempfile.mkdtemp())
+                                text=True, cwd=tempfile.mkdtemp(),
+                                preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
         log_dir = Path(env["MINI_AGENT_HOME"]) / "sessions"
         for _ in range(200):                         # wait until the tool call is under way
             logs = list(log_dir.glob("*.jsonl"))
