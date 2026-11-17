@@ -20,7 +20,8 @@ from ..terminal import stdin_is_terminal
 from ..session import SessionLog
 from . import pets, theme
 from .common import (PLAN_GUIDANCE, SESS_DIR, compact_notice, latest_session, new_session_path,
-                     mark_message, resume_state, session_conversation, stop_notice)
+                     mark_message, note_approval_now, resume_state, session_conversation,
+                     stop_notice)
 
 SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -260,6 +261,7 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
         if unfinished is not None:
             # -c: continue the task that did not finish, from its last completed step
             state = resume_state(unfinished)
+            note_approval_now(state, unfinished, options.get("approve"), stdin_is_terminal())
             if state is None:                 # sent, but the program stopped before it began
                 note = f"Running the task sent before the program stopped: {unfinished['goal']}"
             else:

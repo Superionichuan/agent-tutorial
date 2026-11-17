@@ -110,6 +110,7 @@ def test_risky_tool_without_a_terminal_stops_the_task():
     assert r.returncode == 3, r.stdout + r.stderr
     assert "42-ran" not in r.stdout and len(server.requests) == 1    # no second model call
     assert "This task needs bash" in r.stdout and "mini_agent -c --yes" in r.stdout
+    assert "Stopped" not in r.stdout and "Answer:" not in r.stdout    # one instruction line
 
 
 def test_a_task_that_keeps_asking_stops_at_the_first_refusal_and_c_yes_continues():
@@ -131,6 +132,29 @@ def test_a_task_that_keeps_asking_stops_at_the_first_refusal_and_c_yes_continues
     assert (Path(work) / "hi.txt").read_text(encoding="utf-8") == "hello"
     told = server.requests[1]["messages"][0]["content"]
     assert "did not run: it needs approval" in told           # the continued turn knows why
+    assert "Now it may run: the task was continued with risky tools allowed" in told
+
+
+def test_the_approval_note_is_added_only_when_the_call_can_run_now():
+    from mini_agent.core.policy import Approval
+    from mini_agent.core.state import State
+    from mini_agent.ui.common import note_approval_now
+    refused = "Error: 'write_file' did not run: it needs approval, and there is no terminal to ask"
+
+    def noted(unfinished, approve, can_ask):
+        state = State(goal="g", steps=[{"thought": "t", "action": "write_file", "args": {},
+                                        "result": refused}])
+        note_approval_now(state, unfinished, approve, can_ask)
+        return state.steps[-1]["result"]
+
+    stopped = {"reason": "needs_approval"}
+    assert "Now it may run" in noted(stopped, "auto", False)
+    assert "Now it may run" in noted(stopped, Approval("auto"), False)
+    assert "Now it can be approved" in noted(stopped, Approval("ask"), True)
+    assert noted(stopped, "ask", False) == refused            # still nobody to ask
+    assert noted(stopped, "deny", True) == refused
+    assert noted({"reason": "interrupted"}, "auto", True) == refused
+    note_approval_now(None, stopped, "auto", True)            # a pending task: nothing to note
 
 
 def test_yes_runs_risky_tools():

@@ -214,18 +214,21 @@ def main(argv=None):
 
     def on_event(type, /, **data):
         log.append(type, **data)
-        console_renderer(type, **data)
         if type == "turn/end":
             ended["reason"] = data.get("reason")
-            if stop_notice(data):
-                print(f"  {stop_notice(data)}")
+            ended["notice"] = stop_notice(data)
+            if ended["notice"]:        # the instruction says it all: no "-> stopped", no "Answer:"
+                print(f"  {ended['notice']}")
+                return
+        console_renderer(type, **data)
     try:
         result = agent.run(goal, on_event=on_event)
     except KeyboardInterrupt:
         print("\nInterrupted. `mini_agent -c` continues this task.", file=sys.stderr)
         return 130
     print("-" * 40)
-    print(f"Answer: {result}")
+    if not ended.get("notice"):
+        print(f"Answer: {result}")
     reason = ended.get("reason")
     return 0 if reason == "done" else 3 if reason == "needs_approval" else 1
 

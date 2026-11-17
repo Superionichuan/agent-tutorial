@@ -41,7 +41,7 @@ from ..core.policy import Approval, summarize_call
 from ..session import SessionLog
 from .common import (PLAN_GUIDANCE, SESS_DIR,  # noqa: F401 (also imported from here)
                      compact_notice, latest_session, new_session_path, resume_state,
-                     mark_message, session_conversation, stop_notice)
+                     mark_message, note_approval_now, session_conversation, stop_notice)
 
 
 
@@ -521,6 +521,7 @@ class MiniAgentApp(App):
         options = {}
         if unfinished is not None:
             state = resume_state(unfinished)          # None: a pending task, run it afresh
+            note_approval_now(state, unfinished, self.agent.approve, can_ask=True)
             if state is not None:
                 options["state"] = state
             conversation = session_conversation(self.agent, self.session_log,

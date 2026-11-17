@@ -112,6 +112,25 @@ def resume_state(unfinished: dict):
     return State(goal=unfinished["goal"], steps=list(restored))
 
 
+def note_approval_now(state, unfinished: dict, approve, can_ask: bool) -> None:
+    """A task that stopped because nobody could approve a risky call (needs_approval), now
+    continued where that call can run: say so after the refused call's result, so that the
+    model calls the tool again instead of working round it. approve: the policy of this run
+    ("auto", "ask", "deny" or an Approval); can_ask: someone is there to answer "ask"."""
+    if state is None or not state.steps or unfinished.get("reason") != "needs_approval":
+        return
+    policy = getattr(approve, "policy", approve)
+    if policy == "auto":
+        note = "Now it may run: the task was continued with risky tools allowed."
+    elif policy == "ask" and can_ask:
+        note = "Now it can be approved: the task was continued at a terminal, where the user is asked."
+    else:
+        return
+    last = state.steps[-1]
+    if "did not run: it needs approval" in str(last.get("result", "")):
+        last["result"] = f"{last['result']}. {note} Call it again if it is still needed."
+
+
 def new_session_path(directory: Optional[Path] = None) -> Path:
     """A fresh session log, named by the time so that the latest sorts last; a second
     session in the same second gets _02, _03, ... The empty file is created here, at once,
