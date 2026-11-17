@@ -14,6 +14,8 @@ Event protocol (same taxonomy as mini_agent.session):
     todo/write   {todos}                       (after a successful todo_write)
     turn/end     {answer, reason}   reason in: done | token_limit | max_steps | invalid_reply |
                                     llm_error (the model call failed: bad key, network, ...)
+    context/compact {step, before_tokens, after_tokens, method, at, replaced, steps}
+                                    (with a lifecycle: the steps were slimmed before this call)
 
 One event stream, many consumers:
     - console renderer (default, plain output)
@@ -22,6 +24,7 @@ One event stream, many consumers:
 """
 from ..state import State, add_step, format_history
 from ..executor import execute
+from ..prompt import build_prompt, load_prompt
 from ...tools.spec import ToolSet
 from ..policy import resolve_approval
 from .think import think
@@ -64,6 +67,8 @@ def run_agent(
     conversation: str = "",
     prompt_name: str = "agent",
     approve=None,
+    lifecycle=None,
+    state: State = None,
 ) -> str:
     """Run the agent main loop.
 
@@ -73,6 +78,9 @@ def run_agent(
     conversation: prior dialogue of this session (projected from the session log).
     approve: None (allow all), a policy "ask" | "auto" | "deny", an Approval, or a
              function approve(action, args) -> bool checked before each tool call.
+    lifecycle: None, or a mini_agent.lifecycle.Lifecycle: written memory, compaction before
+             each model call, a handoff at every stop (the lines marked "lifecycle").
+    state: an unfinished turn to continue (mini_agent.lifecycle.restore_steps); None = new.
     """
     toolset = ToolSet.build(tools, tool_desc)
     funcs, tool_desc = toolset.funcs, toolset.desc
@@ -82,7 +90,9 @@ def run_agent(
     else:
         emit = on_event
 
-    state = State(goal=goal)
+    resumed = state is not None
+    if state is None:
+        state = State(goal=goal)
 
     # Reset LLM token counters
     if hasattr(llm, 'reset_usage'):
@@ -91,18 +101,32 @@ def run_agent(
         llm.total_prompt_tokens = 0
         llm.total_completion_tokens = 0
 
-    emit("turn/start", goal=goal, name=name)
+    if lifecycle is not None:  # lifecycle: follow this turn (turn/end writes the handoff)
+        emit = lifecycle.attach(emit, state, resumed=resumed)
+        memory_prompt = lifecycle.start(goal, memory_prompt)
+
+    def history_of():
+        history = format_history(state)
+        if conversation:
+            history = f"[Earlier in this session]\n{conversation}\n[This turn]\n" + history
+        return history
+
+    def prompt_of(memory):  # the prompt think() sends with this memory (lifecycle measures it)
+        return build_prompt(goal, tool_desc, history_of(), skills=skills_prompt, memory=memory,
+                            template=load_prompt(prompt_name))
+
+    emit("turn/start", goal=goal, name=name, **({"resumed": True} if resumed else {}))
 
     invalid = 0  # consecutive replies that did not parse
 
     for i in range(max_steps):
-        step = i + 1
+        step = state.steps_done + i + 1
         emit("step/start", step=step)
 
         # 1. Think (streaming in UI mode: each LLM delta emits assistant/chunk)
-        history = format_history(state)
-        if conversation:
-            history = f"[Earlier in this session]\n{conversation}\n[This turn]\n" + history
+        if lifecycle is not None:  # lifecycle: slim old steps if the next prompt is too big
+            memory_prompt = lifecycle.before_think(step, prompt_of)
+        history = history_of()
         on_chunk = None
         if on_event is not None:
             on_chunk = lambda text, kind="content": emit("assistant/chunk", step=step, text=text, kind=kind)

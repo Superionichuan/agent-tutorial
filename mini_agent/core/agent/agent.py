@@ -33,6 +33,7 @@ class Agent:
         prompt_name: str = "agent",  # prompts/<name>.md (e.g. "coding")
         approve=None,  # None / "auto": all run; "ask": confirm risky tools; "deny"; or a function
         confine: bool = True,  # file tools only reach paths inside the workspace
+        lifecycle=None,  # a mini_agent.lifecycle.Lifecycle (True = defaults): memory, compaction
     ):
         self.llm = llm or create_llm()  # auto-load config from .env
 
@@ -61,6 +62,19 @@ class Agent:
         self.memory = Memory() if use_memory else None
         # a policy name becomes one Approval for the agent's lifetime ("always" answers persist)
         self.approve = Approval(approve) if isinstance(approve, str) else approve
+
+        # Lifecycle: written memory in <workspace>/.mini_agent, compaction, handoff
+        if lifecycle is True:
+            from ...lifecycle import Lifecycle
+            lifecycle = Lifecycle()
+        if lifecycle is not None:
+            if lifecycle.workspace is None:
+                lifecycle.workspace = self.config.workspace
+            if lifecycle.llm is None:
+                lifecycle.llm = self.llm
+            if lifecycle.base_memory is None:
+                lifecycle.base_memory = self._get_memory_prompt
+        self.lifecycle = lifecycle
 
     def _load_skills(self):
         """Load skills"""
@@ -97,8 +111,10 @@ class Agent:
     def workspace(self) -> Path:
         return self.config.workspace
 
-    def run(self, goal: str, verbose: bool = True, on_event=None, conversation: str = "") -> str:
-        """Run a goal. on_event(type, **data) receives the event stream (None = console output)."""
+    def run(self, goal: str, verbose: bool = True, on_event=None, conversation: str = "",
+            state=None) -> str:
+        """Run a goal. on_event(type, **data) receives the event stream (None = console output).
+        state: an unfinished turn to continue (mini_agent.lifecycle.restore_steps)."""
         workspace_str = get_workspace_str(self.config.workspace)
         context = f"Workspace: {workspace_str}\nSystem: {describe_system()}\n\n{self.tool_desc}"
         try:
@@ -109,13 +125,18 @@ class Agent:
         limit = _workspace.confined.set(self.confine)        # file tools stay inside it
         mem = _memory.current.set(self.memory)                # remember / log write here
         try:
-            return self._run(goal, context, verbose, on_event, conversation)
+            return self._run(goal, context, verbose, on_event, conversation, state)
+        except BaseException as e:
+            if self.lifecycle is not None:   # a crash or Ctrl-C still leaves a handoff
+                self.lifecycle.end("interrupted" if isinstance(e, KeyboardInterrupt) else "error",
+                                   f"{type(e).__name__}: {e}")
+            raise
         finally:
             _memory.current.reset(mem)
             _workspace.confined.reset(limit)
             _workspace.current.reset(token)
 
-    def _run(self, goal, context, verbose, on_event, conversation) -> str:
+    def _run(self, goal, context, verbose, on_event, conversation, state=None) -> str:
         return run_agent(
             llm=self.llm,
             tools=self.tools,
@@ -130,7 +151,9 @@ class Agent:
             on_event=on_event,
             conversation=conversation,
             prompt_name=self.prompt_name,
-            approve=self.approve
+            approve=self.approve,
+            lifecycle=self.lifecycle,
+            state=state,
         )
 
     def log(self, content: str):
