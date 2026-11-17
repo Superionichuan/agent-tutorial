@@ -7,16 +7,19 @@ The loop (core/agent/run.py) calls it in three places; with lifecycle=None nothi
     memory = lifecycle.before_think(step, prompt_of)    # before every model call
 
 Two limits are kept apart. The context window: compaction looks at the size of the
-next prompt (prompt_of renders it; the last call's real input tokens calibrate the
-estimate). The run's max_tokens: a spending budget over the whole turn; compaction
-does not reset it, and when it stops the turn, end() writes the handoff so that
-`mini_agent -c` continues with a fresh budget.
+next prompt (prompt_of renders it; estimated as UTF-8 bytes / 3). The run's max_tokens:
+a spending budget over the whole turn; compaction does not reset it, and when it stops
+the turn, end() writes the handoff so that `mini_agent -c` continues with a fresh budget.
+
+Every decision depends only on the steps, the files and the session log, never on what
+one process happened to remember: a turn continued from the log (restore_steps) makes
+the same decisions and sends the same prompt as the run that was cut off.
 """
-import inspect
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 from ..core.state import State
-from ..core.state.format_history import format_history
 from ..mem.memory import current as _running_memory
 from . import compact as C
 from . import notes as N
@@ -25,8 +28,48 @@ HINT = ("To keep a checked fact across compactions, call remember with content a
         "(how you know it: a command and its output, a file and line, a source).")
 INTERRUPTED = ("Error: interrupted before this call finished (the session stopped); it may have run "
                "partly or not at all. Check its effect before repeating it.")
-# format_history keeps at most this many characters of steps (it drops the oldest beyond)
-HISTORY_CHARS = 2 * inspect.signature(format_history).parameters["max_tokens"].default
+HARD = 0.8          # share of the window a prompt must stay under, even if the last steps are cut
+SMALL = 2000        # results this short are never cut by the last resort
+
+
+class Progress:
+    """What a turn has done, noted from its steps as they ran (the handoff's lists)."""
+
+    def __init__(self):
+        self.count, self.done, self.commands, self.files = 0, [], [], {}
+        self.todos, self.thought = None, ""
+
+    def see(self, step: dict) -> None:
+        self.count += C.covered([step])
+        self.done.append(f"{self.count}. {C.line(step, 160)}")
+        action, args = step.get("action"), step.get("args")
+        if isinstance(args, dict) and not step.get("compacted"):
+            path = args.get("path")
+            if action == "write_file" and path:
+                self.files[str(path)] = "written"
+            elif action == "read_file" and path:
+                self.files.setdefault(str(path), "read")
+            elif action in ("bash", "run_python"):
+                command = str(args.get("cmd") or args.get("code") or "").strip().splitlines()
+                if command:
+                    self.commands.append(C.cut(command[0], 100))
+            elif action == "todo_write" and not str(step.get("result", "")).startswith("Error"):
+                self.todos = args.get("todos")
+        if step.get("thought"):
+            self.thought = str(step["thought"])
+
+    def copy(self) -> "Progress":
+        other = Progress()
+        other.count, other.done, other.commands = self.count, list(self.done), list(self.commands)
+        other.files, other.todos, other.thought = dict(self.files), self.todos, self.thought
+        return other
+
+
+@dataclass
+class Restored(State):
+    """A State rebuilt from the session log, with what the lifecycle had noted of the turn."""
+    progress: Progress = field(default_factory=Progress)
+    floor: Optional[int] = None
 
 
 class Lifecycle:
@@ -37,7 +80,7 @@ class Lifecycle:
     compact_at    compact when the next prompt would pass this (share of the window when
                   <= 1, else tokens)
     compact_to    ... down to this, if the mechanical passes can
-    keep_steps    the last steps of a turn, never cut
+    keep_steps    the last steps of a turn, never cut (unless one would not fit the window)
     session_budget  the earlier-session text between turns (conversation())
     base_memory   a function giving the [Memory] text without the lifecycle part (Agent sets
                   its own); without it, the memory given to start() is used
@@ -54,7 +97,6 @@ class Lifecycle:
         self.keep_steps = max(0, int(keep_steps))
         self.session_budget = session_budget
         self.base_memory = base_memory
-        self.tokens_per_byte = 1 / C.BYTES_PER_TOKEN
         self.state, self.goal, self.resumed = None, "", False
         self._emit, self._base, self._ended = None, "", True
         self._new_turn()
@@ -73,9 +115,25 @@ class Lifecycle:
         """Tokens for a share of the window (<= 1) or a token count (> 1)."""
         return int(value * self.window) if value <= 1 else int(value)
 
-    def count(self, text: str) -> int:
-        """Estimated tokens of a prompt, calibrated by the model's reported usage."""
-        return int(len(text.encode("utf-8")) * self.tokens_per_byte) + 1
+    @property
+    def trigger(self) -> int:
+        return self.limit(self.compact_at)
+
+    @property
+    def target(self) -> int:
+        return self.limit(self.compact_to)
+
+    @property
+    def hard(self) -> int:
+        return int(HARD * self.window)
+
+    @property
+    def history_tokens(self) -> int:
+        """For format_history: so large that its own cap never drops a step the window holds;
+        the lifecycle keeps the prompt under the window instead."""
+        return 2 * self.window
+
+    count = staticmethod(C.count_tokens)
 
     # ---------- hooks ----------
 
@@ -84,11 +142,13 @@ class Lifecycle:
 
         Returns the emit for the loop to use: it passes every event on, and at turn/end
         calls end(). resumed: the turn continues an unfinished one (its message is
-        already in user.md)."""
+        already in user.md); a state from restore_steps brings what was noted of it."""
         self.state, self._emit, self.resumed = state, emit, resumed
         self._new_turn()
         self._ended = False
-        self._mark = self._usage()
+        if resumed and isinstance(state, Restored):
+            self.progress, self._floor = state.progress.copy(), state.floor
+            self._seen = len(state.steps)
 
         def emit_and_follow(event, /, **data):   # positional: events have a field named kind
             emit(event, **data)
@@ -115,15 +175,11 @@ class Lifecycle:
 
         prompt_of(memory) renders the prompt the loop is about to send. Returns the
         [Memory] text for that call."""
-        state = self.state
-        self._follow(state)
-        self._calibrate()
+        self._follow(self.state)
         memory = self.memory()
-        prompt = prompt_of(memory)
-        before = self.count(prompt)
-        if self._due(before, state.steps) and len(state.steps) > self.keep_steps:
-            return self._compact(step, prompt_of, before)
-        self._sent = len(prompt.encode("utf-8"))
+        before = self.count(prompt_of(memory))
+        if self._due(before):
+            memory = self._compact(step, prompt_of, before)
         return memory
 
     def end(self, reason: str, answer="") -> None:
@@ -136,7 +192,7 @@ class Lifecycle:
             self._follow(self.state)
         try:
             if reason == "done":
-                N.close_handoff(self.folder / "handoff.md",
+                N.close_handoff(N.inside(self.folder.parent) / "handoff.md",
                                 f"closed · the turn finished (done) at {N.now()}")
             else:
                 self._write_handoff(f"open · stopped: {reason}", answer)
@@ -151,8 +207,9 @@ class Lifecycle:
         base = base or ""
         parts = [base] if base.strip() and base.strip() != "(none)" else []
         try:
-            handoff = N.open_handoff(self.folder / "handoff.md")
-            earlier = self._earlier_messages()
+            folder = N.inside(self.folder.parent)
+            handoff = N.open_handoff(folder / "handoff.md")
+            earlier = self._earlier_messages(folder)
             facts = self._facts(base)
         except OSError as e:
             self._warn(f"could not read {self.folder}: {e}")
@@ -167,8 +224,8 @@ class Lifecycle:
         parts.append(HINT)
         return "\n\n".join(parts)
 
-    def _earlier_messages(self) -> str:
-        entries = N.user_messages(self.folder / "user.md")
+    def _earlier_messages(self, folder: Path) -> str:
+        entries = N.user_messages(folder / "user.md")
         if entries and entries[-1][2].strip() == self.goal.strip():
             entries = entries[:-1]                      # this turn's message is the [Goal]
         blocks = [f"#{n} · {when}\n{text}" for n, when, text in entries]
@@ -190,11 +247,10 @@ class Lifecycle:
 
     def _newest(self, blocks: list, share: float):
         """The newest blocks within the share of the window (at least one); and how many
-        older ones were left out. Counted with the plain estimate, so the same files
-        always give the same text."""
+        older ones were left out."""
         budget, kept, used = self.limit(share), [], 0
         for block in reversed(blocks):
-            size = C.count_tokens(block)
+            size = self.count(block)
             if kept and used + size > budget:
                 break
             kept.append(block)
@@ -204,42 +260,33 @@ class Lifecycle:
 
     # ---------- compaction ----------
 
-    @property
-    def trigger(self) -> int:
-        return self.limit(self.compact_at)
-
-    @property
-    def target(self) -> int:
-        return self.limit(self.compact_to)
-
-    def _due(self, before: int, steps: list) -> bool:
-        # over the threshold, or so many steps that format_history would start dropping them
-        if before <= self.trigger and _history_chars(steps) <= 0.9 * HISTORY_CHARS:
+    def _due(self, before: int) -> bool:
+        if before <= self.trigger:
             return False
+        if before > self.hard:                 # would not fit the window: try whenever it grew
+            return self._floor is None or before > self._floor
         # the last compaction could not reach the target: wait until the prompt has grown again
-        return self._floor is None or before > self._floor + max(0, self.trigger - self.target)
-
-    def _fits(self, after: int, steps: list) -> bool:
-        return after <= self.target and _history_chars(steps) <= HISTORY_CHARS // 2
+        grown = self._floor is None or before > self._floor + max(0, self.trigger - self.target)
+        return grown and len(self.state.steps) > self.keep_steps
 
     def _compact(self, step: int, prompt_of, before: int) -> str:
         state = self.state
         original = list(state.steps)
-        k = len(original) - self.keep_steps
+        k = max(0, len(original) - self.keep_steps)
         old, recent = original[:k], original[k:]
         self._write_handoff(f"open · compacted at step {step}")
         memory = self.memory()
 
-        def measure(new_old):
-            state.steps[:] = new_old + recent
+        def measure(new_old, new_recent=recent):
+            state.steps[:] = new_old + new_recent
             return self.count(prompt_of(memory))
 
         method, chosen = "mechanical", [C.trim(s) for s in old]
         after = measure(chosen)
-        if not self._fits(after, state.steps):
+        if after > self.target and old:
             chosen = [C.fold(s) for s in old]
             after = measure(chosen)
-        if not self._fits(after, state.steps):
+        if after > self.target and old:
             n = C.covered(old)
             summary = self._summarize(old)
             if summary:
@@ -247,61 +294,44 @@ class Lifecycle:
             else:
                 chosen = [C.compacted(C.DROPPED.format(n=n), n)]
             after = measure(chosen)
-        state.steps[:] = chosen + recent
+        kept = list(recent)
+        while after > self.hard:               # the last steps alone are too big: cut the largest
+            i = max(range(len(kept)), key=lambda j: len(str(kept[j].get("result", ""))), default=None)
+            if i is None or len(str(kept[i].get("result", ""))) <= SMALL:
+                break
+            result = str(kept[i]["result"])
+            kept[i] = {**kept[i], "result": C.cut(result, len(result) // 2)}
+            after = measure(chosen, kept)
+        new = chosen + kept
+        state.steps[:] = new
         at = 0
-        while at < min(k, len(chosen)) and original[at] == chosen[at]:
+        while at < min(len(original), len(new)) and original[at] == new[at]:
             at += 1
+        tail = 0
+        while tail < min(len(original), len(new)) - at and original[-1 - tail] == new[-1 - tail]:
+            tail += 1
+        self._floor = None if after <= self.target else after
         # the event carries the replacement in full: the log alone rebuilds this context
         self._event("context/compact", step=step, before_tokens=before, after_tokens=after,
-                    method=method, at=at, replaced=k - at, steps=chosen[at:])
-        self._floor = None if after <= self.target else after
+                    method=method, at=at, replaced=len(original) - at - tail,
+                    steps=new[at:len(new) - tail], floor=self._floor)
         self._seen = len(state.steps)
-        self._sent = len(prompt_of(memory).encode("utf-8"))
         return memory
 
     def _summarize(self, steps: list):
         if self.llm is None:
             return None
-        summary = C.summarize(self.llm, steps)
-        self._mark = self._usage()           # the summary's tokens are not the next call's
-        return summary
-
-    def _usage(self) -> int:
-        return int(getattr(self.llm, "total_prompt_tokens", 0) or 0)
-
-    def _calibrate(self):
-        """tokens per byte from the last call: its real input tokens / the bytes it sent."""
-        used, self._mark = self._usage() - self._mark, self._usage()
-        if used > 0 and self._sent > 0:
-            self.tokens_per_byte = min(0.6, max(0.15, used / self._sent))
+        return C.summarize(self.llm, steps)
 
     # ---------- following the turn; the handoff ----------
 
     def _new_turn(self):
-        self._seen = self._count = self._sent = self._mark = 0
-        self._done, self._commands, self._files = [], [], {}
-        self._todos, self._thought, self._floor = None, "", None
+        self._seen, self._floor, self.progress = 0, None, Progress()
 
     def _follow(self, state):
         """Take note of the steps added since the last look (done list, files, plan)."""
         for s in state.steps[self._seen:]:
-            self._count += C.covered([s])
-            self._done.append(f"{self._count}. {C.line(s, 160)}")
-            action, args = s.get("action"), s.get("args")
-            if isinstance(args, dict) and not s.get("compacted"):
-                path = args.get("path")
-                if action == "write_file" and path:
-                    self._files[str(path)] = "written"
-                elif action == "read_file" and path:
-                    self._files.setdefault(str(path), "read")
-                elif action in ("bash", "run_python"):
-                    command = str(args.get("cmd") or args.get("code") or "").strip().splitlines()
-                    if command:
-                        self._commands.append(C.cut(command[0], 100))
-                elif action == "todo_write" and not str(s.get("result", "")).startswith("Error"):
-                    self._todos = args.get("todos")
-            if s.get("thought"):
-                self._thought = str(s["thought"])
+            self.progress.see(s)
         self._seen = len(state.steps)
 
     def _write_handoff(self, status: str, answer=None):
@@ -311,31 +341,32 @@ class Lifecycle:
             self._warn(f"could not write the handoff: {e}")
 
     def _handoff(self, status: str, answer=None) -> str:
+        p = self.progress
         goal = self.goal if len(self.goal) <= 600 else (
             self.goal[:600] + f"… ({len(self.goal)} characters; the full text is in user.md)")
         out = ["# Handoff", f"Status: {status}", f"Written: {N.now()}", "", "## Goal", goal, "",
-               f"## Done ({self._count} steps)"]
-        if len(self._done) > 30:
-            out.append(f"({len(self._done) - 30} earlier steps are not listed; the session log has them)")
-        out += self._done[-30:] or ["(nothing yet)"]
+               f"## Done ({p.count} steps)"]
+        if len(p.done) > 30:
+            out.append(f"({len(p.done) - 30} earlier steps are not listed; the session log has them)")
+        out += p.done[-30:] or ["(nothing yet)"]
         out += ["", "## Next"]
-        todos = [t for t in (self._todos or []) if isinstance(t, dict)
+        todos = [t for t in (p.todos or []) if isinstance(t, dict)
                  and t.get("status") in ("in_progress", "pending")]
         out += [f"- [{t.get('status')}] {t.get('content', '')}" for t in todos]
-        if self._thought:
-            out.append("Last thought: " + C.cut(" ".join(self._thought.split()), 400))
-        if not todos and not self._thought:
+        if p.thought:
+            out.append("Last thought: " + C.cut(" ".join(p.thought.split()), 400))
+        if not todos and not p.thought:
             out.append("(not recorded)")
-        written = [p for p, kind in self._files.items() if kind == "written"]
-        read = [p for p, kind in self._files.items() if kind == "read"]
+        written = [path for path, kind in p.files.items() if kind == "written"]
+        read = [path for path, kind in p.files.items() if kind == "read"]
         out += ["", "## Files touched"]
         if written:
             out.append("written: " + ", ".join(written))
         if read:
             out.append("read: " + ", ".join(read))
-        if self._commands:
-            out.append("commands: " + " | ".join(self._commands[-10:]))
-        if not (written or read or self._commands):
+        if p.commands:
+            out.append("commands: " + " | ".join(p.commands[-10:]))
+        if not (written or read or p.commands):
             out.append("(none)")
         if answer:
             out += ["", "## Stopped with", C.cut(str(answer), 500)]
@@ -359,12 +390,12 @@ class Lifecycle:
         message is in user.md, which memory() shows in full."""
         budget = self.limit(self.session_budget)
         text = _dialogue(log)
-        if C.count_tokens(text) > budget and self.llm is not None:
+        if self.count(text) > budget and self.llm is not None:
             log.compact(self.llm)
             text = _dialogue(log)
         lines, used = [], 0
         for ln in reversed(text.split("\n")):
-            used += C.count_tokens(ln) + 1
+            used += self.count(ln) + 1
             if lines and used > budget:
                 break
             lines.append(ln)
@@ -381,13 +412,7 @@ def _dialogue(log) -> str:
     return "\n".join(out)
 
 
-def _history_chars(steps: list) -> int:
-    """Characters of the steps as format_history writes them (without its cap)."""
-    return sum(len(f"{i}. {s.get('action')}({s.get('args')}) → {s.get('result')}") + 1
-               for i, s in enumerate(steps, 1))
-
-
-def restore_steps(events) -> State:
+def restore_steps(events) -> Restored:
     """The State of an unfinished turn, rebuilt from its events in the session log.
 
     events: from the turn's first turn/start (not resumed) to the end of the log; later
@@ -397,16 +422,22 @@ def restore_steps(events) -> State:
     the context is the compacted one, not the raw steps. A tool call without a result
     is not run again: it gets INTERRUPTED as its result. A thought without a call (the
     turn stopped before running it) is dropped. steps_done: the highest step number
-    used, so a continued turn numbers its steps after it.
+    used, so a continued turn numbers its steps after it. progress and floor: what the
+    lifecycle had noted (from every step as it ran) and the state of its last compaction.
     """
-    goal, steps, last = "", [], 0
+    goal, steps, last, floor = "", [], 0, None
+    progress = Progress()
     think = call = None
+
+    def add(step):
+        steps.append(step)
+        progress.see(step)
 
     def settle():                      # a segment ended here: what was in flight
         nonlocal think, call
         if think is not None and call is not None:
-            steps.append({"thought": think.get("thought"), "action": call.get("name"),
-                          "args": call.get("args"), "result": INTERRUPTED})
+            add({"thought": think.get("thought"), "action": call.get("name"),
+                 "args": call.get("args"), "result": INTERRUPTED})
         think = call = None
 
     for event in events:
@@ -416,22 +447,23 @@ def restore_steps(events) -> State:
         if kind == "turn/start":
             settle()
             if not data.get("resumed"):
-                goal, steps, last = data.get("goal", ""), [], 0
+                goal, steps, last, floor, progress = data.get("goal", ""), [], 0, None, Progress()
         elif kind == "step/think":
             think, call = data, None
         elif kind == "tool/call":
             call = data
         elif kind == "tool/result" and think is not None:
             action = think.get("action")
-            steps.append({"thought": think.get("thought"),
-                          "action": action if action is not None else "(invalid reply)",
-                          "args": think.get("args") if action is not None else {},
-                          "result": data.get("content", "")})
+            add({"thought": think.get("thought"),
+                 "action": action if action is not None else "(invalid reply)",
+                 "args": think.get("args") if action is not None else {},
+                 "result": data.get("content", "")})
             think = call = None
         elif kind == "context/compact":
             at = data.get("at", 0)
             steps[at:at + data.get("replaced", 0)] = data.get("steps", [])
+            floor = data.get("floor")
         elif kind == "turn/end":
             think = call = None
     settle()
-    return State(goal=goal, steps=steps, steps_done=last)
+    return Restored(goal=goal, steps=steps, steps_done=last, progress=progress, floor=floor)

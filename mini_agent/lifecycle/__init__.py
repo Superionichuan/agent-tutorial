@@ -13,6 +13,6 @@ when that is not enough. The core loop calls it through small hooks; see README.
 restore_steps(events) rebuilds an unfinished turn from the session log (mini_agent -c).
 """
 from .compact import count_tokens
-from .lifecycle import INTERRUPTED, Lifecycle, restore_steps
+from .lifecycle import INTERRUPTED, Lifecycle, Progress, Restored, restore_steps
 
-__all__ = ["Lifecycle", "restore_steps", "count_tokens", "INTERRUPTED"]
+__all__ = ["Lifecycle", "restore_steps", "Restored", "Progress", "count_tokens", "INTERRUPTED"]

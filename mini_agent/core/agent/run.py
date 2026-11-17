@@ -109,7 +109,10 @@ def run_agent(
         memory_prompt = lifecycle.start(goal, memory_prompt)
 
     def history_of():
-        history = format_history(state)
+        if lifecycle is None:
+            history = format_history(state)
+        else:  # lifecycle: it keeps the prompt under the window; no step is dropped silently
+            history = format_history(state, max_tokens=lifecycle.history_tokens)
         if conversation:
             history = f"[Earlier in this session]\n{conversation}\n[This turn]\n" + history
         return history
@@ -129,6 +132,11 @@ def run_agent(
         # 1. Think (streaming in UI mode: each LLM delta emits assistant/chunk)
         if lifecycle is not None:  # lifecycle: slim old steps if the next prompt is too big
             memory_prompt = lifecycle.before_think(step, prompt_of)
+            spent = getattr(llm, 'total_prompt_tokens', 0) + getattr(llm, 'total_completion_tokens', 0)
+            if spent >= max_tokens:  # a summary used up the budget: no further call
+                emit("turn/end", answer=f"Token limit ({spent:,} tokens)",
+                     reason="token_limit", detail=f"{spent:,}/{max_tokens:,}")
+                return f"Token limit ({spent:,} tokens)"
         history = history_of()
         on_chunk = None
         if on_event is not None:
