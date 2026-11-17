@@ -84,6 +84,32 @@ def test_a_one_shot_run_is_logged():
         server.close()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="SIGINT to a child process: POSIX only")
+def test_ctrl_c_in_a_one_shot_run_says_how_to_continue():
+    import signal
+    import time
+    step = json.dumps({"thought": "t", "action": "bash", "args": {"cmd": "sleep 20"}})
+    server = FakeServer([step])
+    try:
+        env = env_for(server)
+        proc = subprocess.Popen([sys.executable, "-m", "mini_agent", "--yes", "wait"], env=env,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, cwd=tempfile.mkdtemp())
+        log_dir = Path(env["HOME"]) / ".mini_agent_sessions"
+        for _ in range(200):                         # wait until the tool call is under way
+            logs = list(log_dir.glob("*.jsonl"))
+            if logs and '"tool/call"' in logs[0].read_text():
+                break
+            time.sleep(0.05)
+        proc.send_signal(signal.SIGINT)
+        out, err = proc.communicate(timeout=30)
+        assert proc.returncode == 130, out + err
+        assert "mini_agent -c" in err and "Traceback" not in err
+        assert SessionLog(logs[0]).unfinished_turn()["reason"] == "interrupted"
+    finally:
+        server.close()
+
+
 def test_killed_mid_tool_then_continued():
     """The process dies inside a tool call; -c finishes the task; no tool runs twice."""
     pytest.importorskip("mini_agent.lifecycle")

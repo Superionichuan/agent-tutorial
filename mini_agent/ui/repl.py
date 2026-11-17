@@ -237,6 +237,9 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
                 options = {"state": state} if state is not None else {}
                 answer = agent.run(goal, on_event=on_event, conversation=conversation, **options)
                 agent.log(f"Q: {goal} -> A: {str(answer)[:120]}")
+            except KeyboardInterrupt:
+                live.console.print(Text("Interrupted. Type the next message, or later run "
+                                        "`mini_agent -c` to continue this task.", style=theme.WARNING))
             except Exception as e:
                 live.console.print(Text(f"[internal error] {e}", style=theme.ERROR))
             finally:

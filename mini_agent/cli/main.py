@@ -161,7 +161,11 @@ def main(argv=None):
     def on_event(type, **data):
         log.append(type, **data)
         console_renderer(type, **data)
-    result = agent.run(goal, on_event=on_event)
+    try:
+        result = agent.run(goal, on_event=on_event)
+    except KeyboardInterrupt:
+        print("\nInterrupted. `mini_agent -c` continues this task.", file=sys.stderr)
+        return 130
     print("-" * 40)
     print(f"Answer: {result}")
     return 0
