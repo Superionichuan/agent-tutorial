@@ -7,6 +7,8 @@ Run: python -m pytest tests/test_lifecycle.py
 import json
 import os
 import subprocess
+
+import pytest
 import sys
 import textwrap
 from pathlib import Path
@@ -350,19 +352,23 @@ KILLED_RUN = textwrap.dedent("""
     from mini_agent import SessionLog
 
     log = SessionLog({log!r})
-    compactions = []
+    compactions, calls = [], [0]       # agent calls since the last compaction
 
     class KilledAfterCompaction(T.Scripted):
         def call(self, prompt):
-            if len(compactions) >= 2 and not prompt.startswith(T.C.SUMMARY_PROMPT):
-                Path({out!r}).write_text(prompt, encoding="utf-8")
-                os._exit(137)          # like kill -9: no handler, no handoff, nothing flushed after
+            if not prompt.startswith(T.C.SUMMARY_PROMPT):
+                if len(compactions) >= {after} and calls[0] >= {calls}:
+                    Path({out!r}).write_text(prompt, encoding="utf-8")
+                    os._exit(137)      # like kill -9: no handler, no handoff, nothing flushed after
+                calls[0] += 1
             return super().call(prompt)
 
     def on_event(t, **d):
         log.append(t, **d)
         if t == "context/compact":
             compactions.append(d)
+            if len(compactions) <= {after}:
+                calls[0] = 0           # counted from the compaction the kill waits for
 
     llm = KilledAfterCompaction(T.KILL_SCRIPT, window=T.KILL_WINDOW)
     agent = T.agent_for(Path({tmp!r}), llm)
@@ -376,12 +382,16 @@ KILL_SCRIPT = ([("blob", {"n": i}) for i in range(1, 4)]
 KILL_WINDOW = 6000
 
 
-def test_compact_kill_continue_sends_the_prompt_it_would_have_sent(tmp_path, monkeypatch):
+@pytest.mark.parametrize("after,calls", [(0, 3), (1, 0), (2, 0), (2, 3)])
+def test_compact_kill_continue_sends_the_prompt_it_would_have_sent(tmp_path, monkeypatch, after, calls):
+    """Killed during a model call (no compaction yet / right after one / some calls after one):
+    rebuilt from the log, the turn sends the prompt it was sending, byte for byte."""
     home(monkeypatch, tmp_path)
     log_path, out = tmp_path / "session.jsonl", tmp_path / "would_have_sent.txt"
     script = tmp_path / "killed_run.py"
     script.write_text(KILLED_RUN.format(repo=os.path.join(HERE, ".."), tests=HERE, log=str(log_path),
-                                        out=str(out), tmp=str(tmp_path)), encoding="utf-8")
+                                        out=str(out), tmp=str(tmp_path), after=after, calls=calls),
+                      encoding="utf-8")
     env = {**os.environ, "MINI_AGENT_HOME": str(tmp_path / "home")}
     r = subprocess.run([sys.executable, str(script)], env=env, capture_output=True, text=True,
                        timeout=120)
@@ -392,12 +402,15 @@ def test_compact_kill_continue_sends_the_prompt_it_would_have_sent(tmp_path, mon
     unfinished = log.unfinished_turn()
     assert unfinished is not None and unfinished["reason"] == "interrupted"
     compactions = [e["data"] for e in unfinished["events"] if e["type"] == "context/compact"]
-    assert len(compactions) == 2
+    assert len(compactions) >= after and (after or not compactions)
     state = restore_steps(unfinished["events"])
     steps_before = len([e for e in unfinished["events"] if e["type"] == "tool/result"])
     assert state.steps_done == max(e["data"]["step"] for e in unfinished["events"]
                                    if isinstance(e["data"].get("step"), int))
-    assert len(state.steps) < steps_before                    # the compacted context, not the raw steps
+    if after:
+        assert len(state.steps) < steps_before                # the compacted context, not the raw steps
+    else:
+        assert len(state.steps) == steps_before
 
     llm = Scripted([("done", {"answer": "4217"})], window=KILL_WINDOW)
     agent = agent_for(tmp_path, llm)
