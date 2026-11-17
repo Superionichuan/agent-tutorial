@@ -43,3 +43,22 @@ def test_dialog_answers_reach_the_worker(monkeypatch, tmp_path):
                 assert not isinstance(app.screen, tui.ApproveScreen)
 
     asyncio.run(scenario())
+
+
+def test_ctrl_q_quits_and_the_status_line_says_so(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_BACKEND", "offline")
+    monkeypatch.setenv("MINI_AGENT_HOME", str(tmp_path / ".mini_agent"))
+    from mini_agent.ui import tui
+    monkeypatch.setattr(tui, "SESS_DIR", tmp_path / "sessions")
+
+    async def scenario():
+        app = tui.MiniAgentApp(agent_options={"approve": "ask"})
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            status = app.query_one(tui.StatusBar)
+            assert "ctrl+q to quit" in str(status.render())
+            await pilot.press("ctrl+q")
+            await pilot.pause(0.1)
+            assert not app.is_running
+
+    asyncio.run(scenario())

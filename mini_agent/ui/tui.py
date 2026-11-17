@@ -331,7 +331,7 @@ class StatusBar(Static):
         t.append(f"  step {self.steps}", style=theme.SUBTLE)
         color = {"idle": theme.SUCCESS, "running": theme.WARNING}.get(self.state, theme.ERROR)
         t.append(f"  ● {self.state}", style=color)
-        t.append("   ctrl+c to quit", style=theme.SUBTLE)
+        t.append("   ctrl+q to quit", style=theme.SUBTLE)
         self.update(t)
 
     def set(self, **kw):
@@ -370,6 +370,10 @@ class ApproveScreen(ModalScreen[str]):
 
 class MiniAgentApp(App):
     """The interactive terminal UI for mini_agent."""
+
+    # Textual quits with Ctrl+Q (Ctrl+C only shows a hint); bound here too, for every
+    # Textual version this package accepts
+    BINDINGS = [("ctrl+q", "quit", "Quit")]
 
     CSS = """
     VerticalScroll { padding: 0 1; height: 18; }
