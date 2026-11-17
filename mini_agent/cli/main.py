@@ -136,8 +136,17 @@ def main(argv=None):
             run_repl(resume=args.resume, agent_options=options)
         return 0
 
-    # one-shot mode
+    if args.resume:
+        print("mini_agent: -c continues the latest session; use it without a task "
+              "(mini_agent -c), then type the next message", file=sys.stderr)
+        return 2
+
+    # one-shot mode: logged like an interactive session, so `mini_agent -c` can
+    # continue it if it is cut off or stopped
     from ..core import Agent
+    from ..core.agent.run import console_renderer
+    from ..session import SessionLog
+    from ..ui.common import SESS_DIR, new_session_path
     goal = " ".join(args.task)
     print(f"Query: {goal}")
     print("-" * 40)
@@ -146,7 +155,13 @@ def main(argv=None):
     except (RuntimeError, ValueError) as e:      # e.g. an unknown LLM_BACKEND
         print(f"mini_agent: {e}", file=sys.stderr)
         return 2
-    result = agent.run(goal)
+    log = SessionLog(new_session_path(SESS_DIR))
+    log.append("user/message", content=goal)
+
+    def on_event(type, **data):
+        log.append(type, **data)
+        console_renderer(type, **data)
+    result = agent.run(goal, on_event=on_event)
     print("-" * 40)
     print(f"Answer: {result}")
     return 0

@@ -135,6 +135,43 @@ class SessionLog:
                 })
         return messages
 
+    # ---------- projection: the turn that did not finish ----------
+
+    def unfinished_turn(self) -> dict | None:
+        """The last turn, when it did not end with "done": cut off (no turn/end, the
+        program was killed) or stopped (max_steps, token_limit, llm_error, ...).
+
+        A turn may already have been continued: its later segments start with a
+        turn/start marked resumed and belong to it. Returns None when the last turn
+        finished, or the log has none; otherwise
+            goal        the task of the turn
+            reason      how its last segment ended ("interrupted" when cut off)
+            events      every event from the turn's first turn/start to the end
+            before_seq  the last event before the turn (and its user message):
+                        the conversation the turn started from
+        """
+        events = list(self.events())
+        start = None
+        for i, event in enumerate(events):
+            if event["type"] == "turn/start" and not event["data"].get("resumed"):
+                start = i
+        if start is None:
+            return None
+        reason = "interrupted"
+        for event in events[start:]:
+            if event["type"] == "turn/start":
+                reason = "interrupted"
+            elif event["type"] == "turn/end":
+                reason = event["data"].get("reason") or "interrupted"
+        if reason == "done":
+            return None
+        first = start
+        if first > 0 and events[first - 1]["type"] == "user/message":
+            first -= 1                        # the message that opened the turn is part of it
+        return {"goal": events[start]["data"].get("goal", ""), "reason": reason,
+                "events": events[start:],
+                "before_seq": events[first - 1]["seq"] if first > 0 else 0}
+
     # ---------- compaction: summarize old history into a checkpoint ----------
 
     def compact(self, llm, keep_tail: int = 6) -> str | None:

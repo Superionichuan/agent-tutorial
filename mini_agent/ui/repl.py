@@ -18,7 +18,7 @@ from ..core import Agent
 from ..core.policy import Approval, summarize_call
 from ..session import SessionLog
 from . import pets, theme
-from .tui import PLAN_GUIDANCE, SESS_DIR
+from .common import PLAN_GUIDANCE, SESS_DIR, latest_session, new_session_path, resume_state
 
 SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -157,12 +157,8 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
     options = dict(agent_options or {})
     if options.get("approve") == "ask":
         options["approve"] = Approval("ask", ask=ask)
-    SESS_DIR.mkdir(exist_ok=True)
-    latest = None
-    if resume:
-        files = sorted(SESS_DIR.glob("*.jsonl"))
-        latest = files[-1] if files else None
-    log = SessionLog(latest or SESS_DIR / f"{int(time.time())}.jsonl")
+    latest = latest_session(SESS_DIR) if resume else None
+    log = SessionLog(latest or new_session_path(SESS_DIR))
     agent = Agent(use_memory=True, **options)
     pet = pets.choose_pet()
     plan_active = False
@@ -191,8 +187,8 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
     model = getattr(agent.llm, "model", "?")
     console.print(Text(f"{backend}·{model}", style=theme.SUBTLE))
 
-    def conversation_text(limit=1600):
-        msgs = log.derive_messages()
+    def conversation_text(limit=1600, until_seq=None):
+        msgs = log.derive_messages(until_seq=until_seq)
         lines = []
         for m in msgs:
             if m["role"] == "user":
@@ -201,33 +197,8 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
                 lines.append("Assistant: " + str(m["content"]))
         return "\n".join(lines)[-limit:]
 
-    while True:
-        try:
-            goal = console.input(Text("❯ ", style=f"bold {theme.CLAUDE}"))
-        except (EOFError, KeyboardInterrupt):
-            break
-        goal = goal.strip()
-        if not goal:
-            continue
-        if goal in ("/exit", "/quit"):
-            break
-        if goal.startswith("/plan"):
-            arg = goal[5:].strip()
-            plan_active = arg != "off"
-            log.append("plan/mode", active=plan_active)
-            console.print(Text(f"✻ plan mode {'on' if plan_active else 'off'}",
-                               style=theme.INACTIVE))
-            if not plan_active or not arg:
-                continue
-            goal = arg
-
-        if len(conversation_text(limit=999999)) > 2500:
-            log.compact(agent.llm)
-        conversation = conversation_text()
-        if plan_active:
-            conversation = PLAN_GUIDANCE + conversation
-        log.append("user/message", content=goal)
-
+    def run_turn(goal, conversation, state=None):
+        """Run (or continue, with state) one turn, showing it live and logging every event."""
         status = LiveStatus()
         calls = {}
         with Live(status, console=console, refresh_per_second=12,
@@ -263,13 +234,54 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
                     live.console.print(Markdown(str(d["answer"])))
 
             try:
-                answer = agent.run(goal, on_event=on_event,
-                                   conversation=conversation)
+                options = {"state": state} if state is not None else {}
+                answer = agent.run(goal, on_event=on_event, conversation=conversation, **options)
                 agent.log(f"Q: {goal} -> A: {str(answer)[:120]}")
             except Exception as e:
                 live.console.print(Text(f"[internal error] {e}", style=theme.ERROR))
             finally:
                 live_now.pop()
+
+    if latest is not None:
+        unfinished = log.unfinished_turn()
+        if unfinished is not None:
+            # -c: continue the task that did not finish, from its last completed step
+            state = resume_state(unfinished)
+            console.print(Text(f"Continuing the unfinished task ({unfinished['reason']}, "
+                               f"{len(state.steps)} steps kept): {unfinished['goal']}",
+                               style=theme.INACTIVE))
+            conversation = conversation_text(until_seq=unfinished["before_seq"])
+            if plan_active:
+                conversation = PLAN_GUIDANCE + conversation
+            run_turn(unfinished["goal"], conversation, state=state)
+
+    while True:
+        try:
+            goal = console.input(Text("❯ ", style=f"bold {theme.CLAUDE}"))
+        except (EOFError, KeyboardInterrupt):
+            break
+        goal = goal.strip()
+        if not goal:
+            continue
+        if goal in ("/exit", "/quit"):
+            break
+        if goal.startswith("/plan"):
+            arg = goal[5:].strip()
+            plan_active = arg != "off"
+            log.append("plan/mode", active=plan_active)
+            console.print(Text(f"✻ plan mode {'on' if plan_active else 'off'}",
+                               style=theme.INACTIVE))
+            if not plan_active or not arg:
+                continue
+            goal = arg
+
+        if len(conversation_text(limit=999999)) > 2500:
+            log.compact(agent.llm)
+        conversation = conversation_text()
+        if plan_active:
+            conversation = PLAN_GUIDANCE + conversation
+        log.append("user/message", content=goal)
+        run_turn(goal, conversation)
 
 
 def main(resume: bool = False, agent_options: dict | None = None):

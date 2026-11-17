@@ -39,8 +39,9 @@ from textual.widgets import Input, Rule, Static
 from ..core import Agent
 from ..core.policy import Approval, summarize_call
 from ..session import SessionLog
+from .common import (PLAN_GUIDANCE, SESS_DIR,  # noqa: F401 (also imported from here)
+                     latest_session, new_session_path, resume_state)
 
-SESS_DIR = Path.home() / ".mini_agent_sessions"
 
 
 # ---------- message widgets (render protocol) ----------
@@ -286,9 +287,6 @@ class TodoCard(Msg):
         return t
 
 
-PLAN_GUIDANCE = ("[Plan mode] You are in plan mode: explore and plan only; do not run tools "
-                 "with side effects (file writes / mutating bash). Produce a complete step-by-step "
-                 "plan first (markdown, starting with a # heading) and wait for user confirmation.\n")
 
 
 class StatusBar(Static):
@@ -399,12 +397,11 @@ class MiniAgentApp(App):
         )
 
     def _latest_session(self):
-        files = sorted(SESS_DIR.glob("*.jsonl"))
-        return files[-1] if files else None
+        return latest_session(SESS_DIR)
 
-    def _conversation_text(self, limit: int = 1600) -> str:
+    def _conversation_text(self, limit: int = 1600, until_seq=None) -> str:
         """Cross-turn context = a projection of the session log (resume includes history for free)."""
-        msgs = self.session_log.derive_messages()
+        msgs = self.session_log.derive_messages(until_seq=until_seq)
         lines = []
         for m in msgs:
             if m["role"] == "user":
@@ -441,12 +438,11 @@ class MiniAgentApp(App):
                 self._append(m)
 
     def on_mount(self):
-        SESS_DIR.mkdir(exist_ok=True)
         latest = self._latest_session() if self.resume else None
         if latest is not None:
             self.session_log = SessionLog(latest)   # continue the same file
         else:
-            self.session_log = SessionLog(SESS_DIR / f"{int(time.time())}.jsonl")
+            self.session_log = SessionLog(new_session_path(SESS_DIR))
         options = dict(self.agent_options)
         if options.get("approve") == "ask":
             options["approve"] = Approval("ask", ask=self._ask_approval)
@@ -458,6 +454,11 @@ class MiniAgentApp(App):
         bar.set(model=f"{backend}·{model}")
         if latest is not None:
             self._rebuild_from_log()   # restore history view
+            unfinished = self.session_log.unfinished_turn()
+            if unfinished is not None:
+                # -c: continue the task that did not finish, from its last completed step
+                self.query_one(StatusBar).set(state="running", steps=0)
+                self.run_goal(unfinished["goal"], unfinished=unfinished)
         else:
             self._splash = PetSplash(self.pet)
             self._append(self._splash)
@@ -502,21 +503,28 @@ class MiniAgentApp(App):
         self.run_goal(goal)
 
     @work(thread=True, exclusive=True)
-    def run_goal(self, goal: str):
-        """Worker thread: run the agent; post events to the UI + write SessionLog."""
-        # long-running: compact when the session grows too large
-        if len(self._conversation_text(limit=999999)) > 2500:
-            self.session_log.compact(self.agent.llm)
-        conversation = self._conversation_text()
+    def run_goal(self, goal: str, unfinished: dict | None = None):
+        """Worker thread: run the agent; post events to the UI + write SessionLog.
+        unfinished: a turn to continue (SessionLog.unfinished_turn()) instead of a new one."""
+        options = {}
+        if unfinished is not None:
+            options["state"] = resume_state(unfinished)
+            conversation = self._conversation_text(until_seq=unfinished["before_seq"])
+        else:
+            # long-running: compact when the session grows too large
+            if len(self._conversation_text(limit=999999)) > 2500:
+                self.session_log.compact(self.agent.llm)
+            conversation = self._conversation_text()
         if self.plan_active:
             conversation = PLAN_GUIDANCE + conversation
-        self.session_log.append("user/message", content=goal)
+        if unfinished is None:
+            self.session_log.append("user/message", content=goal)
         def on_event(type: str, **d):
             self.session_log.append(type, **d)               # persist
             self.call_from_thread(self._on_event, type, d)   # render on UI thread
         try:
             answer = self.agent.run(goal, on_event=on_event,
-                                    conversation=conversation)
+                                    conversation=conversation, **options)
             # durable memory: auto-log each turn to today's log (the agent can also use remember)
             self.agent.log(f"Q: {goal} -> A: {str(answer)[:120]}")
         except Exception as e:
