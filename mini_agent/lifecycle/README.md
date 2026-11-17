@@ -17,12 +17,18 @@ In `<workspace>/.mini_agent/` (with a `.gitignore`, so git leaves it alone):
 
 | file | written | content |
 |---|---|---|
-| `user.md` | at the start of every turn | every user message, verbatim; each entry's header gives its length, so no text inside a message can end it |
+| `user.md` | at the start of every turn | every user message, verbatim; each entry's header gives its length, so no text inside a message can end it (an entry whose length no longer holds, edited by hand or cut short by a crash, is read up to the next header) |
 | `handoff.md` | at every compaction, and when a turn stops for any reason except done | goal, steps done, next step (the plan from `todo_write`, the last thought), files written and read, commands run |
 
 When a turn ends with done, an open handoff is marked closed and is no longer shown.
-Nothing is read or written through a symbolic link, and `.mini_agent` must resolve inside
-the workspace; otherwise the files are not used and a `lifecycle/warning` event says why.
+Nothing is read or written through a symbolic link: `.mini_agent` must be a real folder of
+the workspace, otherwise the files are not used and a `lifecycle/warning` event says why.
+On POSIX systems every file is opened through a handle on that folder, so a link swapped
+in while a file is opened is not followed either.
+
+A message sent again, such as a task continued with `mini_agent -c` before it started, is
+recorded once when the caller names it: `lifecycle.message_id = "<session file>#<seq>"`
+before the run (the command line does). The id goes into the entry's header.
 
 Notes with evidence: `remember(content, evidence)`. `evidence` says how the agent knows
 it (a command and its output, a file and line, a source) and is stored under the note in
@@ -56,12 +62,18 @@ half the window), the old steps are slimmed until the prompt is under `compact_t
    "must be shorter" guard of `SessionLog.compact`);
 4. if there is no usable summary, they are replaced by one line pointing to the handoff.
 
-The last `keep_steps` steps are never changed, with one exception: if the prompt would
-still take more than 80% of the window, the largest of their results are cut to head and
-tail (otherwise the call would fail). format_history's own cap is raised to the window, so
-no step is dropped from the prompt without a trace. If the last compaction could not reach
-`compact_to`, the next one waits until the prompt has grown by `compact_at - compact_to`,
-so a summary is not requested at every step. Each compaction emits
+A summary is used only if it makes the prompt smaller than the folded steps, and the
+pointer only if it does. The last `keep_steps` steps are never changed, with one exception:
+if the prompt would still take more than 80% of the window, the largest of their results
+and arguments are cut to head and tail. With a lifecycle, format_history has no cap of its
+own, so no step is left out of the prompt unseen. If even then the prompt would not fit
+the window, nothing is sent: the turn stops with reason `context_full` and the handoff is
+written (a shorter task, or a model with a larger window, is needed).
+
+If the last compaction could not reach `compact_to`, the next model summary waits until
+the prompt has grown by `compact_at - compact_to` (above 80% of the window only the
+mechanical passes run meanwhile), so a summary is not requested at every step; a pass
+that changes nothing emits nothing. Each compaction emits
 `context/compact {step, before_tokens, after_tokens, method, at, replaced, steps, floor}`:
 `steps` replaces `state.steps[at:at+replaced]` and holds the new entries in full, so the
 session log alone rebuilds the compacted context.
@@ -73,15 +85,18 @@ it stops a turn (also right after a summary that used it up), the handoff is wri
 `mini_agent -c` continues with a fresh budget.
 
 Between turns, `lifecycle.conversation(log)` gives the earlier-session text within
-`session_budget` (default 10% of the window); it asks the model to summarise the log
-(`SessionLog.compact`) only when the pruned text is over the budget.
+`session_budget` (default 10% of the window; the newest line is cut to head and tail if it
+alone is over); it asks the model to summarise the log (`SessionLog.compact`) only when
+the pruned text is over the budget. `conversation(log, until_seq=n)` gives the text as it
+was up to event `n` (a continued turn gets the text it started with), only reading.
 
 ## Continuing a turn
 
 `restore_steps(events)` rebuilds the state of an unfinished turn from its session-log
 events (`SessionLog.unfinished_turn()["events"]`), with every compaction applied. A tool
-call that started but has no result is not run again; its result says it was
-interrupted. A decision that never ran (a stop before the call) is dropped. Steps are
+call that started but has no result is not run again, whatever stopped the turn; its
+result says it was interrupted. A decision that never ran (a stop before the call) is
+dropped. Steps are
 numbered on from the last one in the log. The returned state also carries what the
 lifecycle had noted of the turn (the handoff's lists, from every step as it ran) and the
 state of its last compaction, so the continued turn sends the prompt the interrupted run

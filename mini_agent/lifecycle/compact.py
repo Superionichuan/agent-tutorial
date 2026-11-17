@@ -4,8 +4,9 @@ Only the old steps change (all but the last keep_steps). Lifecycle tries, in ord
 until the projected prompt is under the target:
   1. trim     long results and arguments are cut to their head and tail;
   2. fold     each step becomes one line;
-  3. the model summarises them (the instruction and the convergence guard of
-     SessionLog.compact: a summary must be shorter than its source);
+  3. the model summarises them (the instruction of SessionLog.compact; its convergence
+     guard counted in tokens: the summary, as the model will see it, must be smaller
+     than its source);
   4. without a usable summary, they become one line that points to the handoff.
 Steps 1, 2 and 4 are mechanical. A step that was folded, summarised or dropped is
 marked ("folded" / "compacted") and is not cut again.
@@ -41,6 +42,15 @@ def cut(text, limit: int) -> str:
     return f"{text[:head]}…[{len(text) - head - tail} chars cut]…{text[-tail:]}"
 
 
+def fit(text: str, tokens: int) -> str:
+    """The text, or its head and tail, within that many estimated tokens ("" if none fit)."""
+    limit = len(text)
+    while count_tokens(text) > tokens and limit > 0:
+        limit = min(limit - 1, tokens * BYTES_PER_TOKEN) * 3 // 4
+        text = cut(text, limit) if limit > 0 else ""
+    return text
+
+
 def shorten(value, limit: int):
     """Arguments with every string cut to the limit (dicts and lists keep their shape)."""
     if isinstance(value, str):
@@ -50,6 +60,29 @@ def shorten(value, limit: int):
     if isinstance(value, list):
         return [shorten(v, limit) for v in value]
     return value
+
+
+def longest(value) -> int:
+    """The length of the longest string in arguments (0 if there is none)."""
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, dict):
+        return max((longest(v) for v in value.values()), default=0)
+    if isinstance(value, list):
+        return max((longest(v) for v in value), default=0)
+    return 0
+
+
+def squeeze(args, limit: int):
+    """Smaller arguments: the longest strings cut to head and tail (the shape kept) while
+    that helps; else the text of the arguments cut to the limit."""
+    smaller = shorten(args, max(TRIM_ARG, longest(args) // 2))
+    return smaller if len(str(smaller)) < len(str(args)) else cut(str(args), limit)
+
+
+def render(step: dict) -> str:
+    """The step as format_history shows it to the model."""
+    return f"{step.get('action')}({step.get('args')}) → {step.get('result', '')}"
 
 
 def kept(step: dict) -> bool:
@@ -117,6 +150,7 @@ def summarize(llm, steps: list):
     if isinstance(reply, LLMError) or not isinstance(reply, str) or reply == NO_RECORDING:
         return None
     reply = reply.strip()
-    if not reply or len(reply) >= len(source):    # convergence guard
+    # convergence guard, in tokens: the summary as the model will see it, framed as a step
+    if not reply or count_tokens(render(compacted(reply, covered(steps)))) >= count_tokens(source):
         return None
     return reply

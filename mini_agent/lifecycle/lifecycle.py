@@ -15,6 +15,7 @@ Every decision depends only on the steps, the files and the session log, never o
 one process happened to remember: a turn continued from the log (restore_steps) makes
 the same decisions and sends the same prompt as the run that was cut off.
 """
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -29,7 +30,7 @@ HINT = ("To keep a checked fact across compactions, call remember with content a
 INTERRUPTED = ("Error: interrupted before this call finished (the session stopped); it may have run "
                "partly or not at all. Check its effect before repeating it.")
 HARD = 0.8          # share of the window a prompt must stay under, even if the last steps are cut
-SMALL = 2000        # results this short are never cut by the last resort
+SMALL = 2000        # results and arguments this short are never cut by the last resort
 
 
 class Progress:
@@ -84,6 +85,11 @@ class Lifecycle:
     session_budget  the earlier-session text between turns (conversation())
     base_memory   a function giving the [Memory] text without the lifecycle part (Agent sets
                   its own); without it, the memory given to start() is used
+
+    message_id    set by the caller before a run (e.g. "<session file>#<seq>"): the next
+                  start() records the message once, even if it is sent again (-c)
+    overflow      after before_think: the estimated tokens of a prompt that, even compacted,
+                  would not fit the window (the loop stops, reason context_full); else None
     """
 
     user_share = 0.25      # earlier user messages beyond this share: the oldest stay in user.md only
@@ -99,6 +105,7 @@ class Lifecycle:
         self.base_memory = base_memory
         self.state, self.goal, self.resumed = None, "", False
         self._emit, self._base, self._ended = None, "", True
+        self.message_id, self.overflow = None, None
         self._new_turn()
 
     # ---------- sizes ----------
@@ -128,10 +135,10 @@ class Lifecycle:
         return int(HARD * self.window)
 
     @property
-    def history_tokens(self) -> int:
-        """For format_history: so large that its own cap never drops a step the window holds;
-        the lifecycle keeps the prompt under the window instead."""
-        return 2 * self.window
+    def history_tokens(self) -> float:
+        """For format_history: no cap. The lifecycle keeps the prompt within the window by
+        cutting what is too big, never by leaving steps out unseen."""
+        return math.inf
 
     count = staticmethod(C.count_tokens)
 
@@ -161,10 +168,11 @@ class Lifecycle:
         return the [Memory] text: the memory given, plus the open handoff, the earlier user
         messages and the notes with evidence."""
         self.goal, self._base = str(goal), memory or ""
+        message_id, self.message_id = self.message_id, None       # for this run only
         try:
             folder = N.folder(self.folder.parent)          # created with a .gitignore
             if not self.resumed:
-                N.append_user(folder / "user.md", self.goal)
+                N.append_user(folder / "user.md", self.goal, message_id)
         except OSError as e:
             self._warn(f"could not write {self.folder}: {e}")
         return self.memory()
@@ -174,12 +182,13 @@ class Lifecycle:
         prompt would pass compact_at, slim the old steps in place (emits context/compact).
 
         prompt_of(memory) renders the prompt the loop is about to send. Returns the
-        [Memory] text for that call."""
+        [Memory] text for that call; sets overflow if even then it would not fit the window."""
         self._follow(self.state)
         memory = self.memory()
-        before = self.count(prompt_of(memory))
-        if self._due(before):
-            memory = self._compact(step, prompt_of, before)
+        size = self.count(prompt_of(memory))
+        if self._due(size):
+            memory, size = self._compact(step, prompt_of, size)
+        self.overflow = size if size > self.window else None
         return memory
 
     def end(self, reason: str, answer="") -> None:
@@ -261,19 +270,24 @@ class Lifecycle:
     # ---------- compaction ----------
 
     def _due(self, before: int) -> bool:
+        if before > self.hard:          # it would not fit: cut now (a summary still waits for _grown)
+            return True
         if before <= self.trigger:
             return False
-        if before > self.hard:                 # would not fit the window: try whenever it grew
-            return self._floor is None or before > self._floor
-        # the last compaction could not reach the target: wait until the prompt has grown again
-        grown = self._floor is None or before > self._floor + max(0, self.trigger - self.target)
-        return grown and len(self.state.steps) > self.keep_steps
+        return self._grown(before) and len(self.state.steps) > self.keep_steps
 
-    def _compact(self, step: int, prompt_of, before: int) -> str:
+    def _grown(self, before: int) -> bool:
+        """No compaction has missed the target yet, or the prompt has grown by
+        compact_at - compact_to since the last one did: worth another full try."""
+        return self._floor is None or before > self._floor + max(0, self.trigger - self.target)
+
+    def _compact(self, step: int, prompt_of, before: int):
+        """Slim the steps toward compact_to; returns the [Memory] text and the prompt's size."""
         state = self.state
         original = list(state.steps)
         k = max(0, len(original) - self.keep_steps)
         old, recent = original[:k], original[k:]
+        previous = self._handoff_text()            # put back if nothing can be slimmed
         self._write_handoff(f"open · compacted at step {step}")
         memory = self.memory()
 
@@ -281,28 +295,43 @@ class Lifecycle:
             state.steps[:] = new_old + new_recent
             return self.count(prompt_of(memory))
 
-        method, chosen = "mechanical", [C.trim(s) for s in old]
+        method, chosen, full = "mechanical", [C.trim(s) for s in old], True
         after = measure(chosen)
         if after > self.target and old:
             chosen = [C.fold(s) for s in old]
             after = measure(chosen)
         if after > self.target and old:
-            n = C.covered(old)
-            summary = self._summarize(old)
-            if summary:
-                method, chosen = "llm", [C.compacted(summary, n)]
-            else:
-                chosen = [C.compacted(C.DROPPED.format(n=n), n)]
-            after = measure(chosen)
-        kept = list(recent)
-        while after > self.hard:               # the last steps alone are too big: cut the largest
-            i = max(range(len(kept)), key=lambda j: len(str(kept[j].get("result", ""))), default=None)
-            if i is None or len(str(kept[i].get("result", ""))) <= SMALL:
+            if self._grown(before):
+                n, folded = C.covered(old), after
+                summary = self._summarize(old)
+                pointer = [C.compacted(C.DROPPED.format(n=n), n)]
+                if summary and measure([C.compacted(summary, n)]) < folded:
+                    method, chosen = "llm", [C.compacted(summary, n)]
+                elif measure(pointer) < folded:
+                    chosen = pointer
+                after = measure(chosen)
+            else:       # the last full try missed the target at about this size: no summary yet
+                full = False
+        kept, spent = list(recent), set()
+        while after > self.hard:           # the last steps alone are too big: cut their largest part
+            size, j, key = max(((len(str(s.get(key, ""))), j, key) for j, s in enumerate(kept)
+                                for key in ("result", "args") if (j, key) not in spent),
+                               default=(0, None, None))
+            if size <= SMALL:
                 break
-            result = str(kept[i]["result"])
-            kept[i] = {**kept[i], "result": C.cut(result, len(result) // 2)}
+            value = kept[j].get(key)
+            smaller = C.cut(str(value), size // 2) if key == "result" else C.squeeze(value, size // 2)
+            if len(str(smaller)) >= size:
+                spent.add((j, key))
+                continue
+            kept[j] = {**kept[j], key: smaller}
             after = measure(chosen, kept)
         new = chosen + kept
+        if new == original:                    # nothing to slim: no compaction, the handoff as it was
+            state.steps[:] = original
+            self._restore_handoff(previous)
+            memory = self.memory()
+            return memory, self.count(prompt_of(memory))
         state.steps[:] = new
         at = 0
         while at < min(len(original), len(new)) and original[at] == new[at]:
@@ -310,13 +339,14 @@ class Lifecycle:
         tail = 0
         while tail < min(len(original), len(new)) - at and original[-1 - tail] == new[-1 - tail]:
             tail += 1
-        self._floor = None if after <= self.target else after
+        if full:
+            self._floor = None if after <= self.target else after
         # the event carries the replacement in full: the log alone rebuilds this context
         self._event("context/compact", step=step, before_tokens=before, after_tokens=after,
                     method=method, at=at, replaced=len(original) - at - tail,
                     steps=new[at:len(new) - tail], floor=self._floor)
         self._seen = len(state.steps)
-        return memory
+        return memory, after
 
     def _summarize(self, steps: list):
         if self.llm is None:
@@ -326,13 +356,27 @@ class Lifecycle:
     # ---------- following the turn; the handoff ----------
 
     def _new_turn(self):
-        self._seen, self._floor, self.progress = 0, None, Progress()
+        self._seen, self._floor, self.progress, self.overflow = 0, None, Progress(), None
 
     def _follow(self, state):
         """Take note of the steps added since the last look (done list, files, plan)."""
         for s in state.steps[self._seen:]:
             self.progress.see(s)
         self._seen = len(state.steps)
+
+    def _handoff_text(self):
+        try:
+            return N.read(N.inside(self.folder.parent) / "handoff.md")
+        except OSError:
+            return None
+
+    def _restore_handoff(self, text):
+        if text is None:
+            return
+        try:
+            N.write_atomic(N.folder(self.folder.parent) / "handoff.md", text)
+        except OSError as e:
+            self._warn(f"could not write the handoff: {e}")
 
     def _write_handoff(self, status: str, answer=None):
         try:
@@ -381,30 +425,35 @@ class Lifecycle:
 
     # ---------- between turns (plain terminal mode, full-screen interface) ----------
 
-    def conversation(self, log) -> str:
+    def conversation(self, log, until_seq=None) -> str:
         """The [Earlier in this session] text for the next turn, within session_budget.
 
         The projection already drops stream chunks and cuts tool results (mechanical);
         only if it is still over the budget, the model summarises older messages into
-        the log (SessionLog.compact); then the newest lines that fit are kept. Every user
-        message is in user.md, which memory() shows in full."""
+        the log (SessionLog.compact); then the newest lines that fit are kept, the newest
+        cut to head and tail if it alone is over. Every user message is in user.md, which
+        memory() shows in full. until_seq: the text as it was up to that event (a turn
+        continued with -c gets the text it started with); only read, never compacted."""
         budget = self.limit(self.session_budget)
-        text = _dialogue(log)
-        if self.count(text) > budget and self.llm is not None:
+        text = _dialogue(log, until_seq)
+        if until_seq is None and self.count(text) > budget and self.llm is not None:
             log.compact(self.llm)
             text = _dialogue(log)
         lines, used = [], 0
         for ln in reversed(text.split("\n")):
-            used += self.count(ln) + 1
-            if lines and used > budget:
+            size = self.count(ln) + 1
+            if used + size > budget:
+                if not lines:                    # the newest line alone is over: head and tail
+                    lines.append(C.fit(ln, budget - 1))
                 break
             lines.append(ln)
+            used += size
         return "\n".join(reversed(lines))
 
 
-def _dialogue(log) -> str:
+def _dialogue(log, until_seq=None) -> str:
     out = []
-    for m in log.derive_messages():
+    for m in log.derive_messages(until_seq=until_seq):
         if m["role"] == "user":
             out.append("User: " + str(m["content"]))
         elif m["role"] == "assistant":
@@ -463,7 +512,7 @@ def restore_steps(events) -> Restored:
             at = data.get("at", 0)
             steps[at:at + data.get("replaced", 0)] = data.get("steps", [])
             floor = data.get("floor")
-        elif kind == "turn/end":
-            think = call = None
+        elif kind == "turn/end":       # a stop (interrupted, error, ...): what was in flight
+            settle()
     settle()
     return Restored(goal=goal, steps=steps, steps_done=last, progress=progress, floor=floor)

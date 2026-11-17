@@ -13,7 +13,9 @@ Event protocol (same taxonomy as mini_agent.session):
     tool/result  {step, call_id, content, is_error}
     todo/write   {todos}                       (after a successful todo_write)
     turn/end     {answer, reason}   reason in: done | token_limit | max_steps | invalid_reply |
-                                    llm_error (the model call failed: bad key, network, ...)
+                                    llm_error (the model call failed: bad key, network, ...) |
+                                    context_full (lifecycle: even compacted, the prompt would
+                                    not fit the model's window)
     context/compact {step, before_tokens, after_tokens, method, at, replaced, steps}
                                     (with a lifecycle: the steps were slimmed before this call)
 
@@ -134,6 +136,11 @@ def run_agent(
             # 1. Think (streaming in UI mode: each LLM delta emits assistant/chunk)
             if lifecycle is not None:  # lifecycle: slim old steps if the next prompt is too big
                 memory_prompt = lifecycle.before_think(step, prompt_of)
+                if lifecycle.overflow:  # even compacted, the prompt would not fit the window
+                    answer = (f"Context full: the next prompt needs about {lifecycle.overflow:,} "
+                              f"tokens, more than the model's window ({lifecycle.window:,})")
+                    emit("turn/end", answer=answer, reason="context_full")
+                    return answer
                 spent = getattr(llm, 'total_prompt_tokens', 0) + getattr(llm, 'total_completion_tokens', 0)
                 if spent >= max_tokens:  # a summary used up the budget: no further call
                     emit("turn/end", answer=f"Token limit ({spent:,} tokens)",
