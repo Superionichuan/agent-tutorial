@@ -16,9 +16,9 @@ from mini_agent.tools import workspace
 from test_harness import J, ScriptedLLM
 
 
-def run(replies, ws):
+def run(replies, ws, **options):
     ev = []
-    Agent(llm=ScriptedLLM(replies), use_memory=False, skills=[], workspace=ws).run(
+    Agent(llm=ScriptedLLM(replies), use_memory=False, skills=[], workspace=ws, **options).run(
         "goal", on_event=lambda t, **d: ev.append((t, d)))
     return [d["content"] for t, d in ev if t == "tool/result"]
 
@@ -46,11 +46,18 @@ def test_shell_runs_in_workspace():
     assert os.path.realpath(res[0].strip()) == ws and os.path.realpath(res[1].strip()) == ws
 
 
-def test_absolute_path_unchanged():
+def test_absolute_path_outside_is_refused_unless_confine_is_off():
     ws, other = tempfile.mkdtemp(), tempfile.mkdtemp()
     target = os.path.join(other, "abs.txt")
-    run([J("write_file", {"path": target, "content": "y"}), J("done", {"answer": "ok"})], ws)
+    res = run([J("write_file", {"path": target, "content": "y"}), J("done", {"answer": "ok"})], ws)
+    assert res[0].startswith("Error:") and "outside the workspace" in res[0]
+    assert not Path(target).exists()
+    run([J("write_file", {"path": target, "content": "y"}), J("done", {"answer": "ok"})], ws,
+        confine=False)
     assert Path(target).read_text() == "y"
+    inside = os.path.join(ws, "in.txt")             # an absolute path inside is fine
+    run([J("write_file", {"path": inside, "content": "z"}), J("done", {"answer": "ok"})], ws)
+    assert Path(inside).read_text() == "z"
 
 
 def test_default_is_current_directory_and_reset_after_run():

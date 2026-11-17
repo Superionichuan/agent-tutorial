@@ -2,7 +2,7 @@
 from typing import Optional
 
 import httpx
-from ..base import BaseLLM, LLMResponse
+from ..base import BaseLLM, LLMError, LLMResponse
 from .claude_stream import stream_claude
 
 # per-model max_output_tokens (measured)
@@ -56,6 +56,14 @@ class ClaudeLLM(BaseLLM):
         return (self._base_url or type(self).BASE_URL).rstrip("/")
 
     def _request(self, prompt: str) -> dict:
+        try:
+            return self._post(prompt)
+        except httpx.HTTPError as e:
+            return {"error": {"message": f"{type(e).__name__}: {e}"}}
+        except ValueError as e:                       # not JSON
+            return {"error": {"message": f"the server did not send JSON ({e})"}}
+
+    def _post(self, prompt: str) -> dict:
         resp = httpx.post(
             f"{self.base_url}/messages",
             headers={
@@ -74,10 +82,13 @@ class ClaudeLLM(BaseLLM):
 
     def call(self, prompt: str) -> str:
         if self.stream:
-            content, inp, out = stream_claude(
-                self.api_key, self.model, prompt, self.timeout, self.max_output_tokens,
-                url=f"{self.base_url}/messages"
-            )
+            try:
+                content, inp, out = stream_claude(
+                    self.api_key, self.model, prompt, self.timeout, self.max_output_tokens,
+                    url=f"{self.base_url}/messages"
+                )
+            except httpx.HTTPError as e:
+                return LLMError(f"Error: {type(e).__name__}: {e}")
             self.total_prompt_tokens += inp
             self.total_completion_tokens += out
             return content
@@ -87,15 +98,15 @@ class ClaudeLLM(BaseLLM):
             if "usage" in data:
                 self.total_prompt_tokens += data["usage"].get("input_tokens", 0)
                 self.total_completion_tokens += data["usage"].get("output_tokens", 0)
-            return data["content"][0]["text"]
+            return "".join(b.get("text", "") for b in data["content"] if b.get("type") == "text")
         elif "error" in data:
-            return f"Error: {data['error'].get('message', data['error'])}"
-        return str(data)
+            return LLMError(f"Error: {data['error'].get('message', data['error'])}")
+        return LLMError(f"Error: unexpected reply: {str(data)[:200]}")
 
     def call_with_usage(self, prompt: str) -> LLMResponse:
         data = self._request(prompt)
         if "content" in data:
-            content = data["content"][0]["text"]
+            content = "".join(b.get("text", "") for b in data["content"] if b.get("type") == "text")
             usage = data.get("usage", {})
             # Claude uses input_tokens/output_tokens
             prompt_tokens = usage.get("input_tokens", 0)
@@ -110,5 +121,5 @@ class ClaudeLLM(BaseLLM):
                 model=data.get("model", self.model)
             )
         elif "error" in data:
-            return LLMResponse(content=f"Error: {data['error'].get('message', data['error'])}")
+            return LLMResponse(content=LLMError(f"Error: {data['error'].get('message', data['error'])}"))
         return LLMResponse(content=str(data))

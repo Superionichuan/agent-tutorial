@@ -1,6 +1,6 @@
 """Ollama backend"""
 import httpx
-from ..base import BaseLLM, LLMResponse
+from ..base import BaseLLM, LLMError, LLMResponse
 
 
 class OllamaLLM(BaseLLM):
@@ -21,15 +21,27 @@ class OllamaLLM(BaseLLM):
         self.context_limit = context_limit
 
     def _request(self, prompt: str) -> dict:
-        resp = httpx.post(
-            f"{self.base_url}/api/generate",
-            json={"model": self.model, "prompt": prompt, "stream": False},
-            timeout=self.timeout
-        )
-        return resp.json()
+        """The response data, or {"error": LLMError} when the call failed"""
+        try:
+            resp = httpx.post(
+                f"{self.base_url}/api/generate",
+                json={"model": self.model, "prompt": prompt, "stream": False},
+                timeout=self.timeout
+            )
+        except httpx.HTTPError as e:
+            return {"error": LLMError(f"Error: {type(e).__name__}: {e} (is an Ollama server running at {self.base_url}?)")}
+        try:
+            data = resp.json()
+        except ValueError:
+            return {"error": LLMError(f"Error: HTTP {resp.status_code}: {resp.text[:200]}")}
+        if isinstance(data, dict) and data.get("error"):
+            return {"error": LLMError(f"Error: {data['error']}")}
+        return data
 
     def call(self, prompt: str) -> str:
         data = self._request(prompt)
+        if "error" in data:
+            return data["error"]
         # Ollama uses prompt_eval_count and eval_count
         self.total_prompt_tokens += data.get("prompt_eval_count", 0)
         self.total_completion_tokens += data.get("eval_count", 0)
@@ -37,6 +49,8 @@ class OllamaLLM(BaseLLM):
 
     def call_with_usage(self, prompt: str) -> LLMResponse:
         data = self._request(prompt)
+        if "error" in data:
+            return LLMResponse(content=data["error"])
         prompt_tokens = data.get("prompt_eval_count", 0)
         completion_tokens = data.get("eval_count", 0)
         self.total_prompt_tokens += prompt_tokens

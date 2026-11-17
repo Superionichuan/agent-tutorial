@@ -7,6 +7,7 @@ from .run import run_agent
 from ...llm import create_llm
 from ...tools import TOOLS, TOOL_DESC
 from ...tools.spec import ToolSet
+from ..policy import Approval
 from ...mem import Memory
 from ...skills import format_skills_prompt, list_skills
 from ...tools import workspace as _workspace
@@ -28,7 +29,9 @@ class Agent:
         skills: Optional[List[str]] = None,  # None = all, [] = none
         use_memory: bool = True,
         prompt_name: str = "agent",  # prompts/<name>.md (e.g. "coding")
-        approve: Optional[Callable[[str, dict], bool]] = None,  # policy check per tool call
+        approve=None,  # None / "auto": all run; "ask": confirm risky tools; "deny"; or a function
+        confine: bool = True,  # file tools only reach paths inside the workspace
+        sandbox: Optional[str] = None,  # "docker": bash and run_python run in a container
     ):
         self.llm = llm or create_llm()  # auto-load config from .env
 
@@ -44,6 +47,10 @@ class Agent:
         # a list becomes name -> ToolSpec (callable like the function)
         self.tools = tools if isinstance(tools, dict) else dict(toolset.specs)
         self.tool_desc = toolset.desc
+        self.sandbox = sandbox
+        if sandbox:
+            self._use_sandbox(sandbox, toolset)
+        self.confine = confine
 
         # Skills
         self._skills = skills  # None=all, []=none, ['a','b']=specific
@@ -54,7 +61,21 @@ class Agent:
         self.prompt_name = prompt_name
         self.use_memory = use_memory
         self.memory = Memory() if use_memory else None
-        self.approve = approve
+        # a policy name becomes one Approval for the agent's lifetime ("always" answers persist)
+        self.approve = Approval(approve) if isinstance(approve, str) else approve
+
+    def _use_sandbox(self, kind: str, toolset: ToolSet):
+        """Replace bash and run_python with versions that run in a container."""
+        try:
+            from ...tools.sandbox import sandboxed_tools
+        except ImportError:
+            raise RuntimeError("sandbox support is not installed in this version of mini_agent") from None
+        replaced = sandboxed_tools(kind, self.config.workspace)
+        tools = dict(self.tools)                 # never change the shared TOOLS table
+        for name, spec in replaced.items():
+            if name in tools:
+                tools[name] = spec
+        self.tools = tools
 
     def _load_skills(self):
         """Load skills"""
@@ -100,9 +121,11 @@ class Agent:
         except OSError:
             pass  # a tool that uses the path reports the problem as data
         token = _workspace.current.set(self.config.workspace)  # relative tool paths start here
+        limit = _workspace.confined.set(self.confine)        # file tools stay inside it
         try:
             return self._run(goal, context, verbose, on_event, conversation)
         finally:
+            _workspace.confined.reset(limit)
             _workspace.current.reset(token)
 
     def _run(self, goal, context, verbose, on_event, conversation) -> str:

@@ -19,7 +19,7 @@ import re
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from .base import BaseLLM
+from .base import BaseLLM, LLMError
 
 DEFAULT_RECORDING = Path(__file__).parent / "recordings" / "tutorial.jsonl"
 NO_RECORDING = ("[offline mode] No recorded response matches this prompt. Offline "
@@ -141,6 +141,8 @@ class RecordingLLM(BaseLLM):
         p0 = self.inner.total_prompt_tokens
         c0 = self.inner.total_completion_tokens
         response = send()
+        if isinstance(response, LLMError):      # failed calls are not recorded
+            return response
         dp = self.inner.total_prompt_tokens - p0
         dc = self.inner.total_completion_tokens - c0
         self.total_prompt_tokens += dp

@@ -23,7 +23,7 @@ from typing import Dict, List, Optional, Tuple
 
 import httpx
 
-from ..base import BaseLLM, ChatReply, LLMResponse, ToolCall
+from ..base import BaseLLM, ChatReply, LLMError, LLMResponse, ToolCall
 
 
 @dataclass(frozen=True)
@@ -77,9 +77,9 @@ def _error(status: int, text: str) -> str:
         data = json.loads(text)
         err = data.get("error", data) if isinstance(data, dict) else data
         msg = err.get("message", err) if isinstance(err, dict) else err
-        return f"Error: HTTP {status}: {str(msg)[:300]}"
+        return LLMError(f"Error: HTTP {status}: {str(msg)[:300]}")
     except ValueError:
-        return f"Error: HTTP {status}: {text[:300]}"
+        return LLMError(f"Error: HTTP {status}: {text[:300]}")
 
 
 def _emit(on_chunk, text: str, kind: str):
@@ -144,10 +144,10 @@ class OpenAICompatLLM(BaseLLM):
 
     def _problem(self) -> str:
         if not self.base_url:
-            return ("Error: no server address: set LLM_BASE_URL (or base_url=...) or choose a "
-                    "provider (LLM_PROVIDER / provider=...)")
+            return LLMError("Error: no server address: set LLM_BASE_URL (or base_url=...) or "
+                            "choose a provider (LLM_PROVIDER / provider=...)")
         if not self.request_model:
-            return "Error: no model: set LLM_MODEL (or model=...)"
+            return LLMError("Error: no model: set LLM_MODEL (or model=...)")
         return ""
 
     def _headers(self) -> dict:
@@ -187,17 +187,17 @@ class OpenAICompatLLM(BaseLLM):
                 resp = client.post(f"{self.base_url}/chat/completions",
                                    headers=self._headers(), json=body)
         except httpx.HTTPError as e:
-            return None, f"Error: {type(e).__name__}: {e}"
+            return None, LLMError(f"Error: {type(e).__name__}: {e}")
         if resp.status_code >= 400:
             return None, _error(resp.status_code, resp.text)
         try:
             data = resp.json()
         except ValueError:
-            return None, f"Error: the server did not send JSON: {resp.text[:200]}"
+            return None, LLMError(f"Error: the server did not send JSON: {resp.text[:200]}")
         if isinstance(data, dict) and "error" in data:
             return None, _error(resp.status_code, json.dumps(data))
         if not isinstance(data, dict) or not data.get("choices"):
-            return None, f"Error: unexpected reply: {str(data)[:200]}"
+            return None, LLMError(f"Error: unexpected reply: {str(data)[:200]}")
         return data, ""
 
     def _stream(self, body: dict, on_chunk) -> Tuple[ChatReply, Tuple[int, int]]:
@@ -258,7 +258,7 @@ class OpenAICompatLLM(BaseLLM):
                             if choice.get("finish_reason"):
                                 reply.finish_reason = choice["finish_reason"]
         except httpx.HTTPError as e:
-            reply.error = f"Error: {type(e).__name__}: {e}"
+            reply.error = LLMError(f"Error: {type(e).__name__}: {e}")
             return reply, used
         reply.content = "".join(parts)
         reply.reasoning = "".join(thinking)
@@ -298,7 +298,7 @@ class OpenAICompatLLM(BaseLLM):
     def call_with_usage(self, prompt: str) -> LLMResponse:
         data, error = self._post(self._body(prompt))
         if error:
-            return LLMResponse(content=error)
+            return LLMResponse(content=error)   # an LLMError
         p, c = self._count(data.get("usage"))
         return LLMResponse(content=self._reply(data).content, prompt_tokens=p, completion_tokens=c,
                            total_tokens=p + c, model=data.get("model", self.request_model))

@@ -12,7 +12,8 @@ Event protocol (same taxonomy as mini_agent.session):
     tool/call    {step, call_id, name, args}
     tool/result  {step, call_id, content, is_error}
     todo/write   {todos}                       (after a successful todo_write)
-    turn/end     {answer, reason}   reason in: done | token_limit | max_steps | invalid_reply
+    turn/end     {answer, reason}   reason in: done | token_limit | max_steps | invalid_reply |
+                                    llm_error (the model call failed: bad key, network, ...)
 
 One event stream, many consumers:
     - console renderer (default, plain output)
@@ -22,6 +23,7 @@ One event stream, many consumers:
 from ..state import State, add_step, format_history
 from ..executor import execute
 from ...tools.spec import ToolSet
+from ..policy import resolve_approval
 from .think import think
 from .check_done import is_done
 
@@ -69,10 +71,12 @@ def run_agent(
     tool_desc: the [Tools] text; None = rendered from the tools.
     on_event(type, **data): event callback. None = default console rendering.
     conversation: prior dialogue of this session (projected from the session log).
-    approve(action, args) -> bool: optional policy check before each tool call.
+    approve: None (allow all), a policy "ask" | "auto" | "deny", an Approval, or a
+             function approve(action, args) -> bool checked before each tool call.
     """
     toolset = ToolSet.build(tools, tool_desc)
     funcs, tool_desc = toolset.funcs, toolset.desc
+    approve = resolve_approval(approve, [n for n, s in toolset.specs.items() if s.risky])
     if on_event is None:
         emit = console_renderer if verbose else (lambda type, **d: None)
     else:
@@ -136,7 +140,12 @@ def run_agent(
                  reason="token_limit", detail=detail)
             return f"Token limit ({total_tokens:,} tokens)"
 
-        # 4. Invalid reply: nothing runs; the parse error is the observation
+        # 4. The model call failed (key, credit, network): stop now, say why
+        if action is None and args.get("llm_error"):
+            emit("turn/end", answer=args["error"], reason="llm_error")
+            return args["error"]
+
+        # 5. Invalid reply: nothing runs; the parse error is the observation
         if action is None:
             invalid += 1
             if invalid == 2:
@@ -149,7 +158,7 @@ def run_agent(
             continue
         invalid = 0
 
-        # 5. Execute
+        # 6. Execute
         call_id = f"s{step}"
         emit("tool/call", step=step, call_id=call_id, name=action, args=args)
         result = execute(action, args, funcs, approve)
@@ -158,7 +167,7 @@ def run_agent(
         if action == "todo_write" and not failed:
             emit("todo/write", todos=args.get("todos", []))
 
-        # 6. Update
+        # 7. Update
         add_step(state, thought, action, args, result)
 
     emit("turn/end", answer=f"Unfinished ({max_steps} steps)", reason="max_steps")

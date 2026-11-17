@@ -1,6 +1,7 @@
 """The think step"""
 from ..prompt import build_prompt, load_prompt
 from ..parser import parse_response
+from ...llm.base import LLMError
 
 
 def think(
@@ -31,4 +32,6 @@ def think(
         response = llm.call_stream(prompt, on_chunk)
     else:
         response = llm(prompt)
+    if isinstance(response, LLMError):        # the call failed: no reply to parse
+        return str(response), None, {"error": str(response), "llm_error": True}
     return parse_response(response)
