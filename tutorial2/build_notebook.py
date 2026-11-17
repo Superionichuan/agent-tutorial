@@ -130,8 +130,9 @@ def _workspace(prompt):
 
 
 def _normalize(prompt):
-    """Mask what differs between machines and days: the workspace path, dates, times."""
-    text = prompt
+    """Mask what differs between machines and days: the system line, the workspace path,
+    dates, times."""
+    text = re.sub(r"^System: .*\n", "", prompt, flags=re.M)   # the OS / shell line
     if _workspace(text):
         text = text.replace(_workspace(text), "<ws>")
     text = text.replace(str(Path.home()), "~")
