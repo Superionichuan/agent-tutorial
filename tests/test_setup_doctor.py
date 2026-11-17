@@ -93,6 +93,53 @@ def test_setup_needs_a_terminal_or_options():
     assert r.returncode == 2
 
 
+@pytest.mark.skipif(os.name == "nt", reason="pseudo-terminals are POSIX-only")
+def test_interactive_setup_on_a_terminal():
+    import pty
+    import select
+    import time
+
+    server = FakeServer(["ready"])
+    env = env_for(TERM="xterm")
+    master, slave = pty.openpty()
+    proc = subprocess.Popen([sys.executable, "-m", "mini_agent", "setup"], env=env, stdin=slave,
+                            stdout=slave, stderr=slave, cwd=tempfile.mkdtemp())
+    os.close(slave)
+    seen = b""
+
+    def wait_for(text: bytes, timeout=60):
+        nonlocal seen
+        end = time.time() + timeout
+        while text not in seen:
+            assert time.time() < end, f"did not see {text!r}: {seen[-1500:]!r}"
+            if select.select([master], [], [], 0.2)[0]:
+                try:
+                    seen += os.read(master, 65536)
+                except OSError:
+                    break
+
+    try:
+        wait_for(b"Number or name")
+        os.write(master, b"compat\r")
+        wait_for(b"Server address")
+        os.write(master, server.url.encode() + b"\r")
+        wait_for(b"typing is hidden")
+        os.write(master, b"sk-typed-0123456789abcdef\r")
+        wait_for(b"Model name")
+        os.write(master, b"m2\r")
+        wait_for(b"Saved to")
+        proc.wait(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        os.close(master)
+        server.close()
+    assert proc.returncode == 0
+    assert b"sk-typed-0123456789abcdef" not in seen               # the key was never echoed
+    saved = config_of(env).read_text(encoding="utf-8")
+    assert "LLM_API_KEY=sk-typed-0123456789abcdef" in saved and "LLM_MODEL=m2" in saved
+
+
 def test_mask():
     assert mask("sk-or-v1-abcdefghijklmnopf326") == "sk-or-v1-…f326"
     assert mask("sk-ant-api03-xyz123456789") == "sk-ant…6789"
