@@ -43,7 +43,10 @@ def density(mass_g: float, volume_cm3: float) -> float:
 
 
 def test_builtin_specs_render_exactly_tool_desc():
-    assert render_tool_desc(BUILTIN_SPECS.values()) == TOOL_DESC
+    # TOOL_DESC is the tutorial's text and stays as it is; remember's optional evidence
+    # argument (mini_agent.lifecycle) appears only in the spec (native tool calling)
+    assert render_tool_desc(BUILTIN_SPECS.values()) == TOOL_DESC.replace(
+        "remember(content)", "remember(content, evidence)")
     assert set(BUILTIN_SPECS) == set(TOOLS)
     assert all(BUILTIN_SPECS[n].fn is TOOLS[n] for n in TOOLS)
     assert {n for n, s in BUILTIN_SPECS.items() if s.risky} == RISKY == {"bash", "run_python", "write_file"}
