@@ -154,26 +154,54 @@ jobs:
           if ((Get-Content (Join-Path $HOME '.mini_agent\config.env') -Raw).Trim() -ne 'LLM_BACKEND=offline') { throw 'config.env changed' }
 
   release:
-    name: GitHub release (tags only)
-    if: startsWith(github.ref, 'refs/tags/v')
+    # On a version tag (v*): the GitHub release. On a push of the branch release-dryrun, or run by
+    # hand: the same steps with a draft release (visible only to collaborators), checked for its
+    # one wheel and deleted again, so the release steps can be proved without publishing.
+    name: GitHub release (tags; a draft dry run on release-dryrun or by hand)
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/release-dryrun'
+      || github.event_name == 'workflow_dispatch'
     needs: [test, install]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      # checkout first: it empties a workspace that has no git repository, which would delete
+      # a wheel downloaded before it
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/release-notes
       - uses: actions/download-artifact@v8
         with:
           name: wheel
           path: wheelhouse
-      - uses: actions/checkout@v7
-        with:
-          sparse-checkout: .github/release-notes
-      - name: Create the release, with the wheel the install scripts download
+      - name: The wheel is there
+        run: ls -l wheelhouse/*.whl
+      - name: Create the release (on a tag), or a draft that is checked and deleted (dry run)
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          wheels=(wheelhouse/*.whl)
+          if [ "${#wheels[@]}" -ne 1 ] || [ ! -f "${wheels[0]}" ]; then
+            echo "::error::expected one wheel in wheelhouse/, found: ${wheels[*]}"
+            exit 1
+          fi
+          wheel="${wheels[0]}"
+          wheel_version="$(basename "$wheel" | cut -d- -f2)"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="$GITHUB_REF_NAME"
+            version="${tag#v}"
+            draft=()
+            if [ "$version" != "$wheel_version" ]; then
+              echo "::error::the tag is $tag but the wheel is version $wheel_version"
+              exit 1
+            fi
+          else
+            version="$wheel_version"
+            tag="v$version-dryrun-$GITHUB_RUN_ID"
+            draft=(--draft --target "$GITHUB_SHA")
+          fi
           options=()
           # A version with a pre-release or dev part (2.0.0.dev0, 2.0.0a1, 2.0.0b1, 2.0.0rc1) is a
           # preview: a GitHub pre-release, which is never shown as the latest release.
@@ -184,6 +212,18 @@ jobs:
           if [ -f "$notes" ]; then
             options+=(--notes-file "$notes")
           else
-            options+=(--notes "Install with one command: see Install in the README.")
+            options+=(--notes "Install with one command: see Install on your computer in the README.")
           fi
-          gh release create "$GITHUB_REF_NAME" wheelhouse/*.whl --title "mini_agent $version" "${options[@]}"
+          gh release create "$tag" "$wheel" --title "mini_agent $version" "${draft[@]}" "${options[@]}"
+          if [ "${#draft[@]}" -gt 0 ]; then
+            assets="$(gh release view "$tag" --json assets --jq '[.assets[].name] | join(",")')"
+            notes_used="$(gh release view "$tag" --json body --jq '.body | split("\n")[0]')"
+            gh release delete "$tag" --yes
+            if [ "$assets" != "mini_agent-$version-py3-none-any.whl" ]; then
+              echo "::error::the draft release carried: ${assets:-nothing}"
+              exit 1
+            fi
+            pre=no
+            if [[ " ${options[*]} " == *" --prerelease "* ]]; then pre=yes; fi
+            echo "::notice title=Release dry run::draft $tag carried $assets; pre-release: $pre; notes begin: $notes_used; the draft was deleted"
+          fi
