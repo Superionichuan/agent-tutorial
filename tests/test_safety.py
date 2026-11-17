@@ -98,6 +98,30 @@ def test_risky_custom_tool_is_asked_and_plain_one_is_not():
     assert res[0].startswith("Error:") and res[1] == "saw y"
 
 
+def test_builtin_shell_keeps_its_risk_under_any_name():
+    from mini_agent.tools import bash as builtin_bash
+    for tools in ({"shell": builtin_bash}, [builtin_bash], {"bash": lambda cmd: "own"},
+                  [ToolSpec("bash", "d", BUILTIN_SPECS["bash"].parameters, builtin_bash, risky=False)]):
+        name = "shell" if isinstance(tools, dict) and "shell" in tools else "bash"
+        asked = []
+        _, res, _, _ = run([J(name, {"cmd": "echo hi"}), J("done", {"answer": "ok"})], tools=tools,
+                           approve=Approval("ask", ask=lambda a, k: (asked.append(a), "no")[1]))
+        assert asked == [name], tools
+        assert res[0].startswith("Error:")
+
+
+def test_entries_added_to_the_builtin_table_still_run():
+    def lookup(q: str) -> str:
+        """Look up."""
+        return "found " + q
+    TOOLS["lookup"] = lookup
+    try:
+        _, res, _, llm = run([J("lookup", {"q": "x"}), J("done", {"answer": "ok"})])
+    finally:
+        del TOOLS["lookup"]
+    assert res == ["found x"]
+
+
 def test_custom_function_and_bad_values():
     assert resolve_approval(None, ["bash"]) is None
     assert resolve_approval("auto", ["bash"]) is None

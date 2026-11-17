@@ -26,6 +26,7 @@ description string (TOOLS, TOOL_DESC), keeps working unchanged.
 from __future__ import annotations
 
 import collections.abc
+import dataclasses
 import enum
 import functools
 import inspect
@@ -270,26 +271,42 @@ class ToolSet:
 
     @classmethod
     def build(cls, tools: Any = None, tool_desc: Optional[str] = None) -> "ToolSet":
-        from .registry import BUILTIN_SPECS, TOOL_DESC, TOOLS
-        if tools is None or tools is TOOLS:
-            return cls(dict(BUILTIN_SPECS), TOOL_DESC if tool_desc is None else tool_desc)
+        """A ToolSet from a list, a dict, or None (the built-in tools).
+
+        A built-in function keeps its description, schema and risk mark under
+        any name; a tool named bash, run_python or write_file is always risky.
+        """
+        from .registry import BUILTIN_SPECS, RISKY, TOOL_DESC, TOOLS
         if isinstance(tools, ToolSet):
             return tools if tool_desc is None else cls(tools.specs, tool_desc)
+        if tools is None:
+            tools = TOOLS
+        by_fn = {id(s.fn): s for s in BUILTIN_SPECS.values()}
+
+        def known(item, name=None) -> ToolSpec:
+            fn = item.fn if isinstance(item, ToolSpec) else item
+            builtin = by_fn.get(id(fn))
+            plain = not isinstance(item, ToolSpec) and getattr(item, "__tool__", None) is None
+            spec = as_spec(builtin if builtin is not None and plain else item, name=name)
+            if not spec.risky and (spec.name in RISKY or (builtin is not None and builtin.risky)):
+                spec = dataclasses.replace(spec, risky=True)
+            return spec
+
         specs: Dict[str, ToolSpec] = {}
         if isinstance(tools, collections.abc.Mapping):
             for key, fn in tools.items():
-                builtin = BUILTIN_SPECS.get(key)
-                specs[key] = builtin if builtin is not None and builtin.fn is fn else as_spec(fn, name=key)
+                specs[key] = known(fn, name=key)
         elif isinstance(tools, Iterable) and not isinstance(tools, (str, bytes)):
             for item in tools:
-                spec = as_spec(item)
+                spec = known(item)
                 if spec.name in specs:
                     raise ValueError(f"two tools are named {spec.name!r}")
                 specs[spec.name] = spec
         else:
             raise TypeError("tools must be a list of functions, or a dict of name -> function")
         if tool_desc is None:
-            tool_desc = render_tool_desc(specs.values())
+            # the built-in table keeps its own text, as before (also when entries were added to it)
+            tool_desc = TOOL_DESC if tools is TOOLS else render_tool_desc(specs.values())
         return cls(specs, tool_desc)
 
     def __contains__(self, name: str) -> bool:
