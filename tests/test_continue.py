@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -116,15 +117,26 @@ def test_killed_mid_tool_then_continued():
     step = lambda cmd: json.dumps({"thought": "t", "action": "bash", "args": {"cmd": cmd}})
     server = FakeServer([
         step("echo one >> count.txt"),
-        step("echo two >> count.txt; kill -9 $PPID"),        # the agent process dies here
+        step("echo two >> count.txt; sleep 20"),     # the agent process is killed during this call
         json.dumps({"thought": "t", "action": "done", "args": {"answer": "finished"}}),
     ])
     try:
         env = env_for(server)
         work = tempfile.mkdtemp()
-        r = cli("--yes", "count to two", env=env, cwd=work)
-        assert r.returncode != 0                                # killed
-        assert (Path(work) / "count.txt").read_text() == "one\ntwo\n"
+        count = Path(work) / "count.txt"
+        proc = subprocess.Popen([sys.executable, "-m", "mini_agent", "--yes", "count to two"],
+                                env=env, cwd=work, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(1200):                    # until the second call has written "two"
+                if proc.poll() is not None or (count.exists() and "two" in count.read_text()):
+                    break
+                time.sleep(0.05)
+            assert proc.poll() is None, "the agent ended before it could be killed"
+        finally:
+            proc.kill()                              # like a crash: no handler runs
+            proc.wait(timeout=30)
+        assert count.read_text() == "one\ntwo\n"
         r = cli("-c", "--yes", env=env, cwd=work)              # stdin closed: exits after the turn
         assert "finished" in r.stdout, r.stdout + r.stderr
         assert (Path(work) / "count.txt").read_text() == "one\ntwo\n"   # nothing ran twice

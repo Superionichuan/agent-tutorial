@@ -19,13 +19,17 @@ def compact_notice(d: dict) -> str:
 
 
 def stop_notice(d: dict) -> str:
-    """The line after a task that stopped on its token budget, its step limit or a full
-    context window; "" otherwise."""
+    """The line after a task that stopped on its token budget, its step limit, a full
+    context window, or an approval nobody could give; "" otherwise."""
     if d.get("reason") == "token_limit":
         return (f"This task used up its token budget ({d.get('detail', '')} tokens). "
                 "`mini_agent -c` continues it with a new budget.")
     if d.get("reason") == "max_steps":
         return "This task reached its step limit. `mini_agent -c` continues it."
+    if d.get("reason") == "needs_approval":
+        return (f"This task needs {d.get('tool') or 'a tool that must be approved'}, and there is "
+                "no terminal to ask for approval. `mini_agent -c --yes` continues it and allows "
+                "it; or run `mini_agent -c` in a terminal to be asked.")
     if d.get("reason") == "context_full":
         return ("The next step of this task does not fit in the model's context window, even "
                 "after compaction. Choose a model with a larger window and run `mini_agent -c`, "

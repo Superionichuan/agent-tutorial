@@ -15,7 +15,8 @@ from rich.markdown import Markdown
 from rich.text import Text
 
 from ..core import Agent
-from ..core.policy import Approval, summarize_call
+from ..core.policy import Approval, NeedsApproval, summarize_call
+from ..terminal import stdin_is_terminal
 from ..session import SessionLog
 from . import pets, theme
 from .common import (PLAN_GUIDANCE, SESS_DIR, compact_notice, latest_session, new_session_path,
@@ -142,6 +143,8 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
     live_now = []          # the Live display of the running turn, paused while asking
 
     def ask(action: str, args: dict) -> str:
+        if not stdin_is_terminal():        # nobody to ask: the task stops (needs_approval)
+            raise NeedsApproval(action)
         live = live_now[-1] if live_now else None
         if live is not None:
             live.stop()

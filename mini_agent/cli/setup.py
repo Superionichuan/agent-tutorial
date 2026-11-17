@@ -18,6 +18,7 @@ import httpx
 
 from .. import paths
 from ..llm.base import mask, redact
+from ..terminal import stdin_is_terminal
 from ..llm.backends.openai_compat import PRESETS, detect_provider
 
 # name, label, backend, key variable (None = no key), default model, needs a base URL
@@ -153,7 +154,7 @@ def main(argv: List[str]) -> int:
 
 
 def _setup(args) -> int:
-    interactive = not args.key_stdin and sys.stdin is not None and sys.stdin.isatty()
+    interactive = not args.key_stdin and stdin_is_terminal()
     provider = ALIASES.get((args.provider or "").lower(), (args.provider or "").lower())
     if provider and provider not in BY_NAME:
         print(f"mini_agent setup: unknown provider {args.provider!r}; use one of: {', '.join(BY_NAME)}",

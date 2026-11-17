@@ -1,6 +1,8 @@
 """Execute tools"""
 from typing import Callable, Dict, Optional
 
+from ..policy import NeedsApproval
+
 
 def execute(action: str, args: dict, tools: Dict[str, Callable],
             approve: Optional[Callable[[str, dict], bool]] = None) -> str:
@@ -8,7 +10,8 @@ def execute(action: str, args: dict, tools: Dict[str, Callable],
 
     approve(action, args) -> bool is an optional policy check. A denied call,
     or a policy that raises an exception, does not run; the reason is
-    returned to the model as the observation.
+    returned to the model as the observation. NeedsApproval (nobody can be
+    asked) goes up to the loop, which stops the task.
     """
     if action not in tools:
         return f"Error: unknown tool '{action}'"
@@ -17,6 +20,8 @@ def execute(action: str, args: dict, tools: Dict[str, Callable],
     if approve is not None:
         try:
             allowed = approve(action, args)
+        except NeedsApproval:
+            raise
         except Exception as e:
             return f"Error: the approval check failed ({e}); '{action}' did not run"
         if not allowed:

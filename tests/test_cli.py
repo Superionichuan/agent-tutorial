@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 import threading
 import time
 
@@ -80,7 +81,8 @@ def env_for(server=None, **extra):
 
 def cli(*args, env, stdin=subprocess.DEVNULL, cwd=None):
     return subprocess.run([sys.executable, "-m", "mini_agent", *args], env=env, stdin=stdin,
-                          capture_output=True, text=True, timeout=120, cwd=cwd or tempfile.mkdtemp())
+                          capture_output=True, encoding="utf-8", errors="replace", timeout=120,
+                          cwd=cwd or tempfile.mkdtemp())
 
 
 def test_help_and_version():
@@ -99,16 +101,36 @@ def test_no_model_configured_is_explained():
         assert "Traceback" not in r.stderr
 
 
-def test_risky_tool_is_not_run_without_a_terminal_to_ask():
+def test_risky_tool_without_a_terminal_stops_the_task():
     server = FakeServer(BASH_THEN_DONE)
     try:
         r = cli("do", "it", env=env_for(server))
     finally:
         server.close()
-    assert r.returncode == 0, r.stderr
-    assert "needs approval, but there is no terminal" in r.stderr
-    assert "was not approved" in r.stdout and "42-ran" not in r.stdout
-    assert "Answer: finished" in r.stdout
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "42-ran" not in r.stdout and len(server.requests) == 1    # no second model call
+    assert "This task needs bash" in r.stdout and "mini_agent -c --yes" in r.stdout
+
+
+def test_a_task_that_keeps_asking_stops_at_the_first_refusal_and_c_yes_continues():
+    write = json.dumps({"thought": "write it", "action": "write_file",
+                        "args": {"path": "hi.txt", "content": "hello"}})
+    done = json.dumps({"thought": "done", "action": "done", "args": {"answer": "written"}})
+    server = FakeServer([write, write, write, write, done])
+    work = tempfile.mkdtemp()
+    try:
+        env = env_for(server)
+        r = cli("write hello into hi.txt", env=env, cwd=work)
+        assert r.returncode == 3 and len(server.requests) == 1, r.stdout + r.stderr
+        assert not (Path(work) / "hi.txt").exists()
+        assert (Path(work) / ".mini_agent" / "handoff.md").exists()
+        r2 = cli("-c", "--yes", env=env, cwd=work)
+    finally:
+        server.close()
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+    assert (Path(work) / "hi.txt").read_text(encoding="utf-8") == "hello"
+    told = server.requests[1]["messages"][0]["content"]
+    assert "did not run: it needs approval" in told           # the continued turn knows why
 
 
 def test_yes_runs_risky_tools():

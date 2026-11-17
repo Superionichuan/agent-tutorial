@@ -205,11 +205,15 @@ def main(argv=None):
     log = SessionLog(new_session_path(SESS_DIR))
     mark_message(agent, log, log.append("user/message", content=goal)["seq"])
 
+    ended = {}
+
     def on_event(type, /, **data):
         log.append(type, **data)
         console_renderer(type, **data)
-        if type == "turn/end" and stop_notice(data):
-            print(f"  {stop_notice(data)}")
+        if type == "turn/end":
+            ended["reason"] = data.get("reason")
+            if stop_notice(data):
+                print(f"  {stop_notice(data)}")
     try:
         result = agent.run(goal, on_event=on_event)
     except KeyboardInterrupt:
@@ -217,7 +221,7 @@ def main(argv=None):
         return 130
     print("-" * 40)
     print(f"Answer: {result}")
-    return 0
+    return 3 if ended.get("reason") == "needs_approval" else 0   # 3: stopped, waiting for a yes
 
 
 if __name__ == "__main__":

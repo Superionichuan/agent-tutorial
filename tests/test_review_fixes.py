@@ -320,7 +320,7 @@ def test_doctor_reports_a_damaged_settings_file(isolated, capsys):
 
 
 def test_setup_stops_cleanly_when_the_terminal_closes(isolated, monkeypatch, capsys):
-    monkeypatch.setattr(sys, "stdin", type("Terminal", (), {"isatty": lambda self: True})())
+    monkeypatch.setattr(setup, "stdin_is_terminal", lambda: True)
 
     def closed(prompt=""):
         raise EOFError

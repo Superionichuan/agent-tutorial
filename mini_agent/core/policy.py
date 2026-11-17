@@ -4,7 +4,10 @@ Three policies:
   auto  every call runs. The library default, so notebooks and scripts never block.
   ask   risky tools (bash, run_python, write_file, and any @tool(risky=True)) need a
         yes from the person at the keyboard; other tools run without asking.
-        The command-line default.
+        The command-line default. With no terminal to ask on (input redirected, a
+        scheduled job), the first risky call stops the task (turn/end reason
+        needs_approval) instead of being refused again and again; `mini_agent -c --yes`
+        continues it.
   deny  risky tools never run; other tools do.
 A custom check is any function approve(action, args) -> bool.
 
@@ -17,10 +20,19 @@ same moment can get past it. For real isolation, run mini_agent inside a
 virtual machine or container of your choice.
 """
 import json
-import sys
 from typing import Callable, Iterable, Optional
 
+from ..terminal import stdin_is_terminal
+
 POLICIES = ("ask", "auto", "deny")
+
+
+class NeedsApproval(Exception):
+    """A risky call needs a yes and there is nobody to ask: the loop stops the task."""
+
+    def __init__(self, action: str):
+        super().__init__(f"{action} needs approval, and there is no terminal to ask")
+        self.action = action
 
 
 def summarize_call(action: str, args: dict, width: int = 600) -> str:
@@ -38,11 +50,10 @@ def summarize_call(action: str, args: dict, width: int = 600) -> str:
 
 
 def console_ask(action: str, args: dict) -> str:
-    """Ask on the terminal. Returns "yes", "no" or "always"; without a terminal, "no"."""
-    if not (sys.stdin and sys.stdin.isatty()):
-        print(f"[approval] {action} needs approval, but there is no terminal to ask: not run "
-              "(use --yes, or approve=\"auto\", to allow it)", file=sys.stderr)
-        return "no"
+    """Ask on the terminal. Returns "yes", "no" or "always". Without a terminal, raises
+    NeedsApproval: nobody can answer, so the task stops instead of going on without the tool."""
+    if not stdin_is_terminal():
+        raise NeedsApproval(action)
     body = summarize_call(action, args).replace("\n", "\n    ")
     print(f"\n  Allow {action}?\n    {body}")
     try:

@@ -24,7 +24,8 @@ shell_mod = importlib.import_module("mini_agent.tools.shell.bash")   # the modul
 
 def run_setup(*args, env, key=None):
     return subprocess.run([sys.executable, "-m", "mini_agent", "setup", *args], env=env,
-                          input=key, capture_output=True, text=True, timeout=120,
+                          input=key, capture_output=True, encoding="utf-8", errors="replace",
+                          timeout=120,
                           cwd=tempfile.mkdtemp())
 
 

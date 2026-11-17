@@ -15,7 +15,9 @@ Event protocol (same taxonomy as mini_agent.session):
     turn/end     {answer, reason}   reason in: done | token_limit | max_steps | invalid_reply |
                                     llm_error (the model call failed: bad key, network, ...) |
                                     context_full (lifecycle: even compacted, the prompt would
-                                    not fit the model's window)
+                                    not fit the model's window) |
+                                    needs_approval (a risky call needs a yes and there is no
+                                    terminal to ask; also carries tool)
     context/compact {step, before_tokens, after_tokens, method, at, replaced, steps}
                                     (with a lifecycle: the steps were slimmed before this call)
 
@@ -28,7 +30,7 @@ from ..state import State, add_step, format_history
 from ..executor import execute
 from ..prompt import build_prompt, load_prompt
 from ...tools.spec import ToolSet
-from ..policy import resolve_approval
+from ..policy import NeedsApproval, resolve_approval
 from .think import think
 from .check_done import is_done
 
@@ -205,7 +207,18 @@ def run_agent(
             # 6. Execute
             call_id = f"s{step}"
             emit("tool/call", step=step, call_id=call_id, name=action, args=args)
-            result = execute(action, args, funcs, approve)
+            try:
+                result = execute(action, args, funcs, approve)
+            except NeedsApproval:
+                # nobody can say yes here: stop, rather than let the model try one risky
+                # tool after another; -c (with --yes, or in a terminal) continues the task
+                result = (f"Error: '{action}' did not run: it needs approval, "
+                          "and there is no terminal to ask")
+                emit("tool/result", step=step, call_id=call_id, content=result, is_error=True)
+                add_step(state, thought, action, args, result)
+                answer = f"Stopped: {action} needs approval, and there is no terminal to ask"
+                emit("turn/end", answer=answer, reason="needs_approval", tool=action)
+                return answer
             failed = result.startswith("Error:")  # tools report failures with this prefix
             emit("tool/result", step=step, call_id=call_id, content=result, is_error=failed)
             if action == "todo_write" and not failed:

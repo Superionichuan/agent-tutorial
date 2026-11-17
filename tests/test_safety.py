@@ -14,7 +14,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from mini_agent import Agent, tool
 from mini_agent.core.agent.run import run_agent
-from mini_agent.core.policy import Approval, console_ask, resolve_approval, summarize_call
+from mini_agent.core import policy
+from mini_agent.core.policy import (Approval, NeedsApproval, console_ask, resolve_approval,
+                                    summarize_call)
 from mini_agent.llm import OpenAICompatLLM
 from mini_agent.llm.base import LLMError
 from mini_agent.tools import TOOLS, ToolSpec, BUILTIN_SPECS, read_file, workspace
@@ -133,14 +135,39 @@ def test_custom_function_and_bad_values():
         resolve_approval(42, [])
 
 
-def test_console_ask_without_a_terminal_says_no(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: False))
-    assert console_ask("bash", {"cmd": "rm -rf /"}) == "no"
-    assert "no terminal" in capsys.readouterr().err
+def test_console_ask_without_a_terminal_stops(monkeypatch):
+    monkeypatch.setattr(policy, "stdin_is_terminal", lambda: False)
+    with pytest.raises(NeedsApproval):
+        console_ask("bash", {"cmd": "rm -rf /"})
+
+
+def test_no_terminal_stops_the_run_at_the_first_risky_call(monkeypatch, tmp_path):
+    monkeypatch.setattr(policy, "stdin_is_terminal", lambda: False)
+    replies = iter(['{"thought": "", "action": "bash", "args": {"cmd": "echo hi"}}'] * 5)
+    calls, events = [], []
+
+    def model(prompt):
+        calls.append(prompt)
+        return next(replies)
+    answer = run_agent(model, TOOLS, "", "say hi", approve="ask", verbose=False,
+                       on_event=lambda kind, **data: events.append((kind, data)))
+    assert len(calls) == 1 and answer.startswith("Stopped: bash needs approval")
+    end = [d for k, d in events if k == "turn/end"][-1]
+    assert end["reason"] == "needs_approval" and end["tool"] == "bash"
+    result = [d for k, d in events if k == "tool/result"][-1]
+    assert "did not run: it needs approval" in result["content"] and result["is_error"]
+
+
+def test_a_person_saying_no_lets_the_task_go_on():
+    replies = iter(['{"thought": "", "action": "bash", "args": {"cmd": "echo hi"}}',
+                    '{"thought": "", "action": "done", "args": {"answer": "skipped"}}'])
+    answer = run_agent(lambda prompt: next(replies), TOOLS, "", "say hi", verbose=False,
+                       approve=Approval("ask", ask=lambda action, args: "no"))
+    assert answer == "skipped"
 
 
 def test_console_ask_reads_the_answer(monkeypatch):
-    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(policy, "stdin_is_terminal", lambda: True)
     for typed, expected in (("y", "yes"), ("YES", "yes"), ("a", "always"), ("", "no"), ("n", "no")):
         monkeypatch.setattr("builtins.input", lambda prompt, typed=typed: typed)
         assert console_ask("bash", {"cmd": "ls"}) == expected
