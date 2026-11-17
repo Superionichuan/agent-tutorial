@@ -264,7 +264,8 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
                 note = (f"Continuing the unfinished task ({unfinished['reason']}, "
                         f"{kept} step{'' if kept == 1 else 's'} kept): {unfinished['goal']}")
             console.print(Text(note, style=theme.INACTIVE))
-            conversation = conversation_text(until_seq=unfinished["before_seq"])
+            conversation = session_conversation(agent, log, conversation_text,
+                                                until_seq=unfinished["before_seq"])
             if plan_active:
                 conversation = PLAN_GUIDANCE + conversation
             if state is None:                 # its message is logged; record it in user.md once

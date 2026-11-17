@@ -19,21 +19,30 @@ def compact_notice(d: dict) -> str:
 
 
 def stop_notice(d: dict) -> str:
-    """The line after a task that stopped on its token budget or step limit; "" otherwise."""
+    """The line after a task that stopped on its token budget, its step limit or a full
+    context window; "" otherwise."""
     if d.get("reason") == "token_limit":
         return (f"This task used up its token budget ({d.get('detail', '')} tokens). "
                 "`mini_agent -c` continues it with a new budget.")
     if d.get("reason") == "max_steps":
         return "This task reached its step limit. `mini_agent -c` continues it."
+    if d.get("reason") == "context_full":
+        return ("The next step of this task does not fit in the model's context window, even "
+                "after compaction. Choose a model with a larger window and run `mini_agent -c`, "
+                "or start a smaller task.")
     return ""
 
 
-def session_conversation(agent, log, plain_text) -> str:
+def session_conversation(agent, log, plain_text, until_seq=None) -> str:
     """The earlier conversation of the session for the next task: with a lifecycle, within
     its token budget (summarised by the model only when pruning is not enough); without
-    one, the old rule (compact the log when it passes 2,500 characters)."""
+    one, the old rule (compact the log when it passes 2,500 characters).
+    until_seq: the conversation as it was up to that event, for a task continued with -c
+    (it gets the text it started with; read only, nothing is compacted)."""
     if getattr(agent, "lifecycle", None) is not None:
-        return agent.lifecycle.conversation(log)
+        return agent.lifecycle.conversation(log, until_seq=until_seq)
+    if until_seq is not None:
+        return plain_text(until_seq=until_seq)
     if len(plain_text(limit=999999)) > 2500:
         log.compact(agent.llm)
     return plain_text()

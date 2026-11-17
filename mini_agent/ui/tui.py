@@ -523,7 +523,9 @@ class MiniAgentApp(App):
             state = resume_state(unfinished)          # None: a pending task, run it afresh
             if state is not None:
                 options["state"] = state
-            conversation = self._conversation_text(until_seq=unfinished["before_seq"])
+            conversation = session_conversation(self.agent, self.session_log,
+                                                self._conversation_text,
+                                                until_seq=unfinished["before_seq"])
             if state is None:                         # record its message in user.md once
                 mark_message(self.agent, self.session_log, unfinished.get("message_seq"))
         else:

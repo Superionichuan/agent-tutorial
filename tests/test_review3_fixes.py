@@ -140,3 +140,51 @@ def test_run_agent_leaves_a_handoff_when_the_call_raises(tmp_path, error):
         run_agent(model, {}, "", "unfinished", lifecycle=lc, verbose=False)
     handoff = tmp_path / ".mini_agent" / "handoff.md"
     assert handoff.exists() and "unfinished" in handoff.read_text()
+
+
+def test_a_pending_task_run_again_is_recorded_once(tmp_path):
+    """Sent, interrupted before it started, then run again by -c: user.md has it once, because
+    the command line marks both runs with the logged message (as the REPL and TUI do)."""
+    from mini_agent import Agent
+    from mini_agent.lifecycle import notes
+    from mini_agent.ui.common import resume_state
+    log = SessionLog(tmp_path / "session.jsonl")
+    seq = log.append("user/message", content="task")["seq"]
+    agent = Agent(llm=lambda p: DONE, workspace=tmp_path, lifecycle=True,
+                  use_memory=False, skills=[])
+
+    def interrupt(kind, **data):
+        if kind == "turn/start":
+            raise KeyboardInterrupt
+        log.append(kind, **data)
+
+    mark_message(agent, log, seq)
+    with pytest.raises(KeyboardInterrupt):
+        agent.run("task", on_event=interrupt)
+    pending = log.unfinished_turn()
+    assert pending["pending"] and pending["message_seq"] == seq
+    mark_message(agent, log, pending["message_seq"])
+    agent.run(pending["goal"], state=resume_state(pending), on_event=log.append)
+    recorded = [m[2] for m in notes.user_messages(tmp_path / ".mini_agent" / "user.md")]
+    assert recorded == ["task"]
+
+
+def test_continue_without_a_lifecycle_gets_the_text_it_started_with():
+    calls = []
+
+    class Plain:
+        lifecycle = None
+        llm = None
+
+    def plain_text(limit=1600, until_seq=None):
+        calls.append(until_seq)
+        return f"text up to {until_seq}"
+
+    assert common.session_conversation(Plain(), None, plain_text, until_seq=7) == "text up to 7"
+    assert calls == [7]
+
+
+def test_a_full_context_window_has_its_own_notice():
+    notice = common.stop_notice({"reason": "context_full"})
+    assert "context window" in notice and "mini_agent -c" in notice
+    assert common.stop_notice({"reason": "done"}) == ""

@@ -100,8 +100,8 @@ def test_budget_stop_writes_a_handoff_and_c_continues_with_a_new_budget():
 
 def test_session_conversation_uses_the_lifecycle_budget():
     class Lc:
-        def conversation(self, log):
-            return f"budgeted:{log}"
+        def conversation(self, log, until_seq=None):
+            return f"budgeted:{log}:{until_seq}"
 
     class WithLc:
         lifecycle = Lc()
@@ -116,7 +116,9 @@ def test_session_conversation_uses_the_lifecycle_budget():
         def compact(self, llm):
             self.compacted = True
 
-    assert session_conversation(WithLc(), "LOG", lambda limit=1600: "x") == "budgeted:LOG"
+    assert session_conversation(WithLc(), "LOG", lambda limit=1600: "x") == "budgeted:LOG:None"
+    assert session_conversation(WithLc(), "LOG", lambda limit=1600: "x",
+                                until_seq=5) == "budgeted:LOG:5"   # -c: the text it started with
     log = Log()
     assert session_conversation(Plain(), log, lambda limit=1600: "x" * min(limit, 3000)) == "x" * 1600
     assert log.compacted                                 # the old rule: over 2,500 characters
