@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple
 import httpx
 
 from .. import paths
+from ..llm.base import mask, redact
 from ..llm.backends.openai_compat import PRESETS, detect_provider
 
 # name, label, backend, key variable (None = no key), default model, needs a base URL
@@ -37,14 +38,6 @@ PROVIDERS: List[Tuple[str, str, str, Optional[str], str, bool]] = [
 BY_NAME = {p[0]: p for p in PROVIDERS}
 ALIASES = {"claude": "anthropic", "openai_compat": "compat", "openai-compatible": "compat",
            "dashscope": "qwen", "google": "gemini"}
-
-
-def mask(value: str) -> str:
-    """A key shown safely: its start and last four characters."""
-    if len(value) <= 12:
-        return "****"
-    head = value[:6] if not value.startswith("sk-or-") else value[:9]
-    return f"{head}…{value[-4:]}"
 
 
 def _ask(prompt: str, default: str = "") -> str:
@@ -99,30 +92,39 @@ def test_call(values: Dict[str, str]) -> Tuple[bool, str]:
     """One small call with these settings: (worked, reply or error)."""
     from ..llm.base import LLMError
     from ..llm.factory import create_llm
+    secrets = [v for k, v in values.items() if k.endswith("_KEY")]
     llm = create_llm(dict(values))
     reply = llm("Reply with the single word: ready")
     if isinstance(reply, LLMError) or str(reply).startswith("Error:"):
-        return False, str(reply)
-    return True, str(reply).strip()[:80]
+        return False, redact(str(reply), *secrets)
+    return True, redact(str(reply).strip()[:80], *secrets)
 
 
 def write_config(values: Dict[str, str]) -> str:
-    """Save to ~/.mini_agent/config.env (the old file is kept as config.env.bak)."""
+    """Save to ~/.mini_agent/config.env, replacing the old file (no backup copy: it
+    would keep an old key). The new file is written next to it and renamed over it,
+    so a symlink at that name is replaced, never written through."""
     target = paths.config_file()
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
-        backup = target.with_name("config.env.bak")
-        backup.write_bytes(target.read_bytes())
-        if os.name != "nt":
-            os.chmod(backup, 0o600)
+    if target.is_dir() and not target.is_symlink():
+        raise IsADirectoryError(f"{target} is a directory; move it away, then run setup again")
     lines = [f"# mini_agent settings, written by `mini_agent setup` on {time.strftime('%Y-%m-%d %H:%M')}",
              "# Environment variables and a .env file in the working directory override these."]
     lines += [f"{k}={v}" for k, v in values.items()]
-    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-    if os.name != "nt":
-        os.chmod(target, 0o600)
+    temp = target.with_name(f".config.env.{os.getpid()}.tmp")
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        if os.name != "nt":
+            os.chmod(temp, 0o600)
+        os.replace(temp, target)
+    except BaseException:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
     return str(target)
 
 
@@ -140,6 +142,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: List[str]) -> int:
     args = build_parser().parse_args(argv)
+    try:
+        return _setup(args)
+    except (EOFError, KeyboardInterrupt):
+        print("\nmini_agent setup: stopped before the end; nothing was saved.", file=sys.stderr)
+        return 1
+
+
+def _setup(args) -> int:
     interactive = not args.key_stdin and sys.stdin is not None and sys.stdin.isatty()
     provider = ALIASES.get((args.provider or "").lower(), (args.provider or "").lower())
     if provider and provider not in BY_NAME:
@@ -199,7 +209,11 @@ def main(argv: List[str]) -> int:
             if not interactive or not _ask("Save these settings anyway? (y/n)", "n").lower().startswith("y"):
                 print("Nothing was saved.")
                 return 1
-    where = write_config(values)
+    try:
+        where = write_config(values)
+    except OSError as e:
+        print(f"mini_agent setup: cannot save the settings: {e}", file=sys.stderr)
+        return 1
     shown = ", ".join(f"{k}={mask(v) if k.endswith('_KEY') else v}" for k, v in values.items())
     print(f"Saved to {where}: {shown}")
     print('Try it:  mini_agent "What is 2**10?"      Check:  mini_agent doctor')

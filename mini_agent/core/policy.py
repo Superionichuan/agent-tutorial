@@ -10,8 +10,11 @@ A custom check is any function approve(action, args) -> bool.
 
 Separately, the file tools (read_file, write_file, list_dir) are confined to
 the agent's workspace (Agent(confine=True), the default): a path that resolves
-outside it, also through a symlink, is refused. bash and run_python are not
-confined by that; run them in a container (sandbox="docker") to confine them.
+outside it, also through a symlink, is refused. This limit is a convenience
+boundary, not isolation: bash and run_python are not confined by it, and the
+path is checked just before it is used, so a program changing symlinks at the
+same moment can get past it. For real isolation, run mini_agent inside a
+virtual machine or container of your choice.
 """
 import json
 import sys

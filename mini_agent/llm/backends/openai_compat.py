@@ -16,6 +16,7 @@ is ambiguous (OpenAI, DeepSeek and DashScope all issue them) and is not guessed.
 Errors (network, HTTP, provider) come back as text starting with "Error:",
 like the other backends, so a run reports them instead of crashing.
 """
+import itertools
 import json
 import os
 from dataclasses import dataclass
@@ -23,7 +24,7 @@ from typing import Dict, List, Optional, Tuple
 
 import httpx
 
-from ..base import BaseLLM, ChatReply, LLMError, LLMResponse, ToolCall
+from ..base import BaseLLM, ChatReply, LLMError, LLMResponse, ToolCall, redact
 
 
 @dataclass(frozen=True)
@@ -177,6 +178,10 @@ class OpenAICompatLLM(BaseLLM):
 
     # ---- transport ----
 
+    def _failed(self, error) -> LLMError:
+        """The error as an LLMError, with the key masked (a gateway may echo it back)."""
+        return redact(error if isinstance(error, LLMError) else LLMError(error), self.api_key)
+
     def _post(self, body: dict):
         """(response data, "") or (None, "Error: ...")"""
         problem = self._problem()
@@ -187,17 +192,23 @@ class OpenAICompatLLM(BaseLLM):
                 resp = client.post(f"{self.base_url}/chat/completions",
                                    headers=self._headers(), json=body)
         except httpx.HTTPError as e:
-            return None, LLMError(f"Error: {type(e).__name__}: {e}")
+            return None, self._failed(f"Error: {type(e).__name__}: {e}")
         if resp.status_code >= 400:
-            return None, _error(resp.status_code, resp.text)
+            return None, self._failed(_error(resp.status_code, resp.text))
         try:
             data = resp.json()
         except ValueError:
-            return None, LLMError(f"Error: the server did not send JSON: {resp.text[:200]}")
+            return None, self._failed(f"Error: the server did not send JSON: {resp.text[:200]}")
+        return self._checked(data, resp.status_code)
+
+    def _checked(self, data, status: int = 200):
+        """(data, "") for a well-formed completion, else (None, "Error: ...")"""
         if isinstance(data, dict) and "error" in data:
-            return None, _error(resp.status_code, json.dumps(data))
-        if not isinstance(data, dict) or not data.get("choices"):
-            return None, LLMError(f"Error: unexpected reply: {str(data)[:200]}")
+            return None, self._failed(_error(status, json.dumps(data)))
+        choices = data.get("choices") if isinstance(data, dict) else None
+        choice = choices[0] if isinstance(choices, list) and choices else None
+        if not isinstance(choice, dict) or not isinstance(choice.get("message") or {}, dict):
+            return None, self._failed(f"Error: unexpected reply: {str(data)[:200]}")
         return data, ""
 
     def _stream(self, body: dict, on_chunk) -> Tuple[ChatReply, Tuple[int, int]]:
@@ -210,60 +221,139 @@ class OpenAICompatLLM(BaseLLM):
         thinking: List[str] = []
         calls: Dict[int, dict] = {}
         used = (0, 0)
+        events = 0
+        other: List[str] = []          # lines that are not server-sent events: an error page?
+
+        def unexpected(data) -> str:
+            return self._failed(f"Error: unexpected reply from the server: {str(data)[:200]}")
+
+        def handle(data) -> str:
+            """Apply one event; returns "" or the error that ends the reply."""
+            nonlocal used
+            if not isinstance(data, dict):
+                return unexpected(data)
+            if "error" in data:
+                return self._failed(_error(200, json.dumps(data)))
+            if data.get("usage"):
+                used = self._count(data["usage"])
+            choices = data.get("choices") or []
+            if not isinstance(choices, list):
+                return unexpected(data)
+            for choice in choices:
+                delta = (choice.get("delta") or {}) if isinstance(choice, dict) else None
+                if not isinstance(delta, dict):
+                    return unexpected(data)
+                why = delta.get("reasoning_content") or delta.get("reasoning")
+                if isinstance(why, str) and why:
+                    thinking.append(why)
+                    if on_chunk:
+                        _emit(on_chunk, why, "reasoning")
+                text = delta.get("content")
+                if isinstance(text, str) and text:
+                    parts.append(text)
+                    if on_chunk:
+                        _emit(on_chunk, text, "content")
+                for tc in delta.get("tool_calls") or []:
+                    if not isinstance(tc, dict):
+                        return unexpected(data)
+                    slot = calls.setdefault(tc.get("index", len(calls)),
+                                            {"id": "", "name": "", "arguments": ""})
+                    fn = tc.get("function") or {}
+                    name, new_id = fn.get("name") or "", tc.get("id") or ""
+                    # The name arrives in pieces to be joined. A server that repeats the
+                    # whole header (same id, same full name) must not double it.
+                    if name and not (new_id and new_id == slot["id"] and name == slot["name"]):
+                        slot["name"] += name
+                    slot["id"] = new_id or slot["id"]
+                    if fn.get("arguments"):
+                        slot["arguments"] += (fn["arguments"] if isinstance(fn["arguments"], str)
+                                              else json.dumps(fn["arguments"]))
+                if choice.get("finish_reason"):
+                    reply.finish_reason = choice["finish_reason"]
+            return ""
+
+        def payloads(lines: List[str]) -> list:
+            """The events in one block of data: lines. One event may span several lines;
+            servers that leave out the blank line between events give one per line."""
+            joined = "\n".join(lines).strip()
+            if not joined:
+                return []
+            if joined == "[DONE]":
+                return ["[DONE]"]
+            try:
+                return [json.loads(joined)]
+            except ValueError:
+                pass
+            out = []
+            for line in lines:
+                if line.strip() == "[DONE]":
+                    out.append("[DONE]")
+                    break
+                try:
+                    out.append(json.loads(line))
+                except ValueError:
+                    continue
+            return out
+
         try:
             with httpx.Client(timeout=self.timeout, transport=self._transport) as client:
                 with client.stream("POST", f"{self.base_url}/chat/completions",
                                    headers=self._headers(), json=body) as resp:
                     if resp.status_code != 200:
-                        reply.error = _error(resp.status_code, resp.read().decode("utf-8", "replace"))
+                        reply.error = self._failed(_error(resp.status_code,
+                                                          resp.read().decode("utf-8", "replace")))
                         return reply, used
-                    for line in resp.iter_lines():
-                        if not line.startswith("data:"):
-                            continue                     # SSE comments, keep-alives
-                        payload = line[5:].strip()
-                        if payload == "[DONE]":
-                            break
-                        try:
-                            data = json.loads(payload)
-                        except ValueError:
+                    block: List[str] = []
+                    finished = False
+                    for line in itertools.chain(resp.iter_lines(), [""]):  # "" ends the last event
+                        if line.startswith("data:"):
+                            block.append(line[5:])
                             continue
-                        if "error" in data:
-                            reply.error = _error(200, json.dumps(data))
-                            return reply, used
-                        if data.get("usage"):
-                            used = self._count(data["usage"])
-                        for choice in data.get("choices") or []:
-                            delta = choice.get("delta") or {}
-                            why = delta.get("reasoning_content") or delta.get("reasoning")
-                            if why:
-                                thinking.append(why)
-                                if on_chunk:
-                                    _emit(on_chunk, why, "reasoning")
-                            text = delta.get("content")
-                            if text:
-                                parts.append(text)
-                                if on_chunk:
-                                    _emit(on_chunk, text, "content")
-                            for tc in delta.get("tool_calls") or []:
-                                slot = calls.setdefault(tc.get("index", len(calls)),
-                                                        {"id": "", "name": "", "arguments": ""})
-                                slot["id"] = tc.get("id") or slot["id"]
-                                fn = tc.get("function") or {}
-                                if fn.get("name") and fn["name"] != slot["name"]:
-                                    slot["name"] = (fn["name"] if not slot["name"]
-                                                    else slot["name"] + fn["name"])
-                                if fn.get("arguments"):
-                                    slot["arguments"] += (fn["arguments"] if isinstance(fn["arguments"], str)
-                                                          else json.dumps(fn["arguments"]))
-                            if choice.get("finish_reason"):
-                                reply.finish_reason = choice["finish_reason"]
+                        if line and not line.startswith((":", "event:", "id:", "retry:")):
+                            other.append(line)              # not part of a server-sent event
+                        if line or not block:
+                            continue
+                        for data in payloads(block):
+                            if data == "[DONE]":
+                                finished = True
+                                break
+                            events += 1
+                            error = handle(data)
+                            if error:
+                                reply.error = error
+                                return reply, used
+                        block = []
+                        if finished:
+                            break
         except httpx.HTTPError as e:
-            reply.error = LLMError(f"Error: {type(e).__name__}: {e}")
+            reply.error = self._failed(f"Error: {type(e).__name__}: {e}")
             return reply, used
+        if not events:
+            # no events at all: an error page, or a whole (non-streamed) reply
+            text = "\n".join(other).strip()
+            try:
+                data = json.loads(text) if text else None
+            except ValueError:
+                data = None
+            if data is None:
+                reply.error = self._failed(
+                    f"Error: the server did not send a stream: {text[:200]}" if text
+                    else "Error: the server sent an empty reply")
+                return reply, used
+            data, error = self._checked(data)
+            if error:
+                reply.error = error
+                return reply, used
+            used = self._count(data.get("usage"))
+            whole = self._reply(data)
+            for kind, value in (("reasoning", whole.reasoning), ("content", whole.content)):
+                if value and on_chunk:
+                    _emit(on_chunk, value, kind)
+            return whole, used
         reply.content = "".join(parts)
         reply.reasoning = "".join(thinking)
         reply.tool_calls = [self._tool_call(calls[i]["name"], calls[i]["arguments"], calls[i]["id"])
-                            for i in sorted(calls)]
+                            for i in sorted(calls, key=lambda i: (0, i) if isinstance(i, int) else (1, str(i)))]
         return reply, used
 
     @staticmethod

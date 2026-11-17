@@ -23,6 +23,26 @@ class LLMError(str):
     """
 
 
+def mask(value: str) -> str:
+    """A key shown safely: its start and last four characters."""
+    if len(value) <= 12:
+        return "****"
+    head = value[:6] if not value.startswith("sk-or-") else value[:9]
+    return f"{head}…{value[-4:]}"
+
+
+def redact(text: str, *secrets: str) -> str:
+    """text with every secret replaced by its masked form (a server may echo the key back).
+    An LLMError stays an LLMError."""
+    out = str(text)
+    for secret in secrets:
+        if secret and len(secret) >= 8 and secret in out:
+            out = out.replace(secret, mask(secret))
+    if out == str(text):
+        return text
+    return LLMError(out) if isinstance(text, LLMError) else out
+
+
 @dataclass
 class ToolCall:
     """One tool call requested by the model in native tool-calling mode.

@@ -1,12 +1,11 @@
 """mini_agent doctor: what is installed, which model is set up and where that comes from, what is missing.
 
 Exit code 0 when the installation works (also when no model is set up yet);
-1 when the package itself is broken (missing files, Python too old).
+1 when something must be fixed: missing package files, Python too old, or a
+settings file that cannot be read.
 """
 import argparse
 import importlib.util
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 from typing import List
@@ -19,8 +18,23 @@ def _secret(key: str) -> bool:
 
 
 def _shown(key: str, value: str) -> str:
-    from .setup import mask
+    from ..llm.base import mask
     return f"{key}={mask(value) if _secret(key) else value}"
+
+
+def _file_problem(path: Path) -> str:
+    """Why a settings file cannot be used as it is ("" when it is fine or absent)."""
+    try:
+        if not path.exists():
+            return ""
+        if path.is_dir():
+            return "is a directory, not a file"
+        path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError:
+        return "is not valid UTF-8 text (damaged?); run `mini_agent setup` to rewrite it"
+    except OSError as e:
+        return f"cannot be read ({e.strerror or e})"
+    return ""
 
 
 def _version_of(module: str) -> str:
@@ -39,6 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: List[str]) -> int:
     args = build_parser().parse_args(argv)
+    from ..llm.base import redact
     from ..llm.factory import PACKAGE_ENV, SELECT_KEYS, choose_backend, config_layers, load_config
     from ..tools.shell.bash import describe_system, shell
 
@@ -61,6 +76,10 @@ def main(argv: List[str]) -> int:
     for name, path in (("environment", None), ("./.env", Path.cwd() / ".env"),
                        ("user config", paths.config_file())):
         label = f"{name} ({path})" if path else name
+        problem = _file_problem(path) if path else ""
+        if problem:
+            print(f"  Warning: {label} {problem}")
+            broken.append(f"{path} {problem}")
         if name in found:
             shown = ", ".join(_shown(k, v) for k, v in found[name].items()) or "(nothing relevant)"
             print(f"  {label}: {shown}")
@@ -77,6 +96,7 @@ def main(argv: List[str]) -> int:
             print(f"  note: {PACKAGE_ENV} (written by a notebook) is ignored: a model is set up above")
 
     config = load_config()
+    secrets = [v for k, v in config.items() if _secret(k)]
     configured = any(v for k, v in config.items() if k in SELECT_KEYS)
     backend = choose_backend(config)
     print("\nModel:")
@@ -90,25 +110,14 @@ def main(argv: List[str]) -> int:
             print(f"  {backend} · {getattr(llm, 'model', '?')}" + (f"  at {where}" if where else ""))
             if args.test:
                 reply = llm("Reply with the single word: ready")
-                print(f"  test call: {str(reply).strip()[:200]}")
+                print(f"  test call: {redact(str(reply).strip()[:200], *secrets)}")
         except Exception as e:
-            print(f"  cannot use these settings: {e}")
+            print(f"  cannot use these settings: {redact(str(e), *secrets)}")
 
     print("\nOptional:")
     print(f"  full-screen interface (mini_agent --tui): textual {_version_of('textual')}"
           if importlib.util.find_spec("textual") else
           "  full-screen interface (mini_agent --tui): textual is not installed (pip install textual)")
-    docker = shutil.which("docker")
-    if docker:
-        try:
-            out = subprocess.run([docker, "version", "--format", "{{.Server.Version}}"],
-                                 capture_output=True, text=True, timeout=10)
-            state = f"Docker {out.stdout.strip()}" if out.returncode == 0 else "Docker installed, not running"
-        except Exception:
-            state = "Docker installed, not answering"
-    else:
-        state = "Docker not found"
-    print(f"  --sandbox docker: {state}")
 
     if broken:
         print("\nProblems:")

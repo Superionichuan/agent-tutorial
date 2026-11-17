@@ -41,7 +41,8 @@ _SECTION = re.compile(r"^(Args|Arguments|Parameters|Params|Keyword Args|Returns?
                       r"Examples?|Notes?|See Also|Attributes)\s*:?\s*$", re.I)
 _GOOGLE_ARG = re.compile(r"^\*{0,2}(\w+)\s*(?:\(([^)]*)\))?\s*:\s*(.*)$")
 _SPHINX_ARG = re.compile(r"^:param\s+(?:[\w\[\], |.]+\s+)?(\w+)\s*:\s*(.*)$")
-_NUMPY_ARG = re.compile(r"^(\w+)\s*:\s*(.*)$")
+# NumPy: "x : int", or several names sharing one description: "x, y : int"
+_NUMPY_ARG = re.compile(r"^(\w+(?:\s*,\s*\w+)*)\s*(?::\s*(.*))?$")
 
 
 @dataclass
@@ -91,10 +92,10 @@ def _json_type(tp) -> dict:
         return {"type": "null"}
     origin, args = typing.get_origin(tp), typing.get_args(tp)
     if origin is typing.Union or (hasattr(types, "UnionType") and origin is types.UnionType):
-        options = [a for a in args if a is not type(None)]
-        if len(options) == 1:
-            return _json_type(options[0])
-        return {"anyOf": [_json_type(a) for a in options]}
+        options = [_json_type(a) for a in args if a is not type(None)]
+        if len(options) < len(args):            # Optional[...]: null is a valid value too
+            options.append({"type": "null"})
+        return options[0] if len(options) == 1 else {"anyOf": options}
     if origin is typing.Literal:
         values = list(args)
         schema: dict = {"enum": values}
@@ -115,6 +116,11 @@ def _json_type(tp) -> dict:
                 collections.abc.Set)
     if tp in sequence or origin in sequence:
         schema = {"type": "array"}
+        if origin is tuple and args and Ellipsis not in args and args != ((),):
+            # tuple[int, str]: a fixed length, one type per position
+            schema["prefixItems"] = [_json_type(a) for a in args]
+            schema["minItems"] = schema["maxItems"] = len(args)
+            return schema
         items = [a for a in args if a is not Ellipsis]
         if len(set(items)) == 1:
             schema["items"] = _json_type(items[0])
@@ -122,8 +128,23 @@ def _json_type(tp) -> dict:
             schema["items"] = {"anyOf": [_json_type(a) for a in dict.fromkeys(items)]}
         return schema
     if tp in (dict, collections.abc.Mapping) or origin in (dict, collections.abc.Mapping):
-        return {"type": "object"}
+        schema = {"type": "object"}
+        if len(args) == 2:
+            values = _json_type(args[1])        # dict[str, int]: every value is an integer
+            if values:
+                schema["additionalProperties"] = values
+        return schema
     return {}
+
+
+def _accepts_null(schema: dict) -> bool:
+    """Whether a JSON schema allows null (a default of None must not contradict it)."""
+    if not schema:
+        return True
+    kind = schema.get("type")
+    if kind == "null" or (isinstance(kind, list) and "null" in kind):
+        return True
+    return any(_accepts_null(s) for s in schema.get("anyOf", []))
 
 
 def _parse_docstring(doc: Optional[str]):
@@ -136,11 +157,19 @@ def _parse_docstring(doc: Optional[str]):
         summary.append(lines[i].strip())
         i += 1
     args: Dict[str, str] = {}
-    section, current, base_indent = None, None, 0
+    # current: the argument names the next continuation line belongs to (NumPy can
+    # describe several at once: "x, y : int")
+    section, current, base_indent = None, [], 0
+
+    def add(text: str):
+        for name in current:
+            args[name] = (args[name] + " " + text).strip()
+
     for raw in lines:
         line = raw.strip()
         if not line:
-            current = None if section != "numpy" else current
+            if section != "numpy":
+                current = []
             continue
         if set(line) == {"-"} and section == "numpy-header":
             section = "numpy"
@@ -153,28 +182,36 @@ def _parse_docstring(doc: Optional[str]):
                 section = "numpy-header"
             else:
                 section = "google" if is_args else None
-            current = None
+            current = []
             continue
         indent = len(raw) - len(raw.lstrip())
         sphinx = _SPHINX_ARG.match(line)
         if sphinx:
-            current, base_indent = sphinx.group(1), indent
-            args[current] = sphinx.group(2).strip()
+            current, base_indent, section = [sphinx.group(1)], indent, "sphinx"
+            args[sphinx.group(1)] = sphinx.group(2).strip()
             continue
-        if section == "google":
+        if section == "sphinx":
+            # an indented line continues the :param above; :returns:, :type x: etc. end it
+            if current and indent > base_indent and not line.startswith(":"):
+                add(line)
+            else:
+                current = []
+        elif section == "google":
             m = _GOOGLE_ARG.match(line)
-            if m and (current is None or indent <= base_indent):
-                current, base_indent = m.group(1), indent
-                args[current] = m.group(3).strip()
+            if m and (not current or indent <= base_indent):
+                current, base_indent = [m.group(1)], indent
+                args[m.group(1)] = m.group(3).strip()
             elif current:
-                args[current] = (args[current] + " " + line).strip()
+                add(line)
         elif section == "numpy":
             m = _NUMPY_ARG.match(line)
-            if m and (current is None or indent <= base_indent):
-                current, base_indent = m.group(1), indent
-                args[current] = ""
+            if m and (not current or indent <= base_indent):
+                current = [n.strip() for n in m.group(1).split(",")]
+                base_indent = indent
+                for name in current:
+                    args[name] = ""
             elif current:
-                args[current] = (args[current] + " " + line).strip()
+                add(line)
     return " ".join(summary), args
 
 
@@ -194,13 +231,20 @@ def spec_from_function(fn: Callable, name: Optional[str] = None,
         hints = {}
     properties: Dict[str, dict] = {}
     required: List[str] = []
-    extra = False
-    for p in inspect.signature(fn).parameters.values():
+    try:
+        signature = inspect.signature(fn)
+    except (TypeError, ValueError):   # some built-in functions: arguments unknown, any accepted
+        signature = None
+    extra = signature is None
+    positional_only = []
+    for p in (signature.parameters.values() if signature else ()):
         if p.kind is p.VAR_POSITIONAL:
             continue
         if p.kind is p.VAR_KEYWORD:
             extra = True
             continue
+        if p.kind is p.POSITIONAL_ONLY:
+            positional_only.append(p.name)
         hint = hints.get(p.name, inspect.Parameter.empty)
         if hint is not inspect.Parameter.empty:
             prop = _json_type(hint)
@@ -212,14 +256,51 @@ def spec_from_function(fn: Callable, name: Optional[str] = None,
             prop["description"] = arg_docs[p.name]
         if p.default is inspect.Parameter.empty:
             required.append(p.name)
-        elif p.default is None or isinstance(p.default, (str, int, float, bool)):
+        elif p.default is None:
+            if _accepts_null(prop):               # never a default the type itself rejects
+                prop["default"] = None
+        elif isinstance(p.default, (str, int, float, bool)):
             prop["default"] = p.default
         properties[p.name] = prop
     parameters = {"type": "object", "properties": properties, "required": required}
     if not extra:
         parameters["additionalProperties"] = False
+    run = _by_keyword(fn, positional_only) if positional_only else fn
     return ToolSpec(name=tool_name, description=description or summary or tool_name,
-                    parameters=parameters, fn=fn, risky=risky, listed=listed)
+                    parameters=parameters, fn=run, risky=risky, listed=listed)
+
+
+def _by_keyword(fn: Callable, positional_only: List[str]) -> Callable:
+    """fn(x, /) takes x only by position, but the model names every argument:
+    pass the named values of the positional-only parameters by position."""
+    @functools.wraps(fn)
+    def call(*args, **kwargs):
+        values = list(args)
+        for name in positional_only[len(values):]:
+            if name not in kwargs:
+                break                     # left out: its default applies (and any after it)
+            values.append(kwargs.pop(name))
+        return fn(*values, **kwargs)
+    return call
+
+
+def _wraps_risky(fn: Any, builtins: Dict[int, "ToolSpec"]) -> bool:
+    """Whether fn is, or wraps (functools.partial, functools.wraps, a ToolSpec), a tool
+    marked risky or a risky built-in."""
+    seen = set()
+    while fn is not None and id(fn) not in seen and len(seen) < 32:
+        seen.add(id(fn))
+        if isinstance(fn, ToolSpec):
+            if fn.risky:
+                return True
+            fn = fn.fn
+            continue
+        mark = getattr(fn, "__tool__", None)
+        builtin = builtins.get(id(fn))
+        if (isinstance(mark, ToolSpec) and mark.risky) or (builtin is not None and builtin.risky):
+            return True
+        fn = fn.func if isinstance(fn, functools.partial) else getattr(fn, "__wrapped__", None)
+    return False
 
 
 def tool(fn: Optional[Callable] = None, *, name: Optional[str] = None,
@@ -274,7 +355,9 @@ class ToolSet:
         """A ToolSet from a list, a dict, or None (the built-in tools).
 
         A built-in function keeps its description, schema and risk mark under
-        any name; a tool named bash, run_python or write_file is always risky.
+        any name; a tool named bash, run_python or write_file is always risky,
+        and so is anything that wraps a risky tool (functools.partial, a
+        decorator using functools.wraps, a ToolSpec around it).
         """
         from .registry import BUILTIN_SPECS, RISKY, TOOL_DESC, TOOLS
         if isinstance(tools, ToolSet):
@@ -288,7 +371,7 @@ class ToolSet:
             builtin = by_fn.get(id(fn))
             plain = not isinstance(item, ToolSpec) and getattr(item, "__tool__", None) is None
             spec = as_spec(builtin if builtin is not None and plain else item, name=name)
-            if not spec.risky and (spec.name in RISKY or (builtin is not None and builtin.risky)):
+            if not spec.risky and (spec.name in RISKY or _wraps_risky(item, by_fn)):
                 spec = dataclasses.replace(spec, risky=True)
             return spec
 

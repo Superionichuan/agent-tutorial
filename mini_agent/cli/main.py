@@ -31,8 +31,9 @@ Without any of these, a local Ollama server (ollama serve) is used.
 
 Safety: the agent can read and write files and run shell commands and Python.
 By default it asks before each risky call (bash, run_python, write_file), and
-its file tools only reach paths inside the workspace. --sandbox docker also
-puts bash and run_python in a container.
+its file tools only reach paths inside the workspace. That limit is a
+convenience, not isolation: for real isolation, run mini_agent inside a
+virtual machine or container of your choice.
 """
 
 NO_MODEL = """\
@@ -65,8 +66,6 @@ def build_parser() -> argparse.ArgumentParser:
                    help="the directory the agent works in (default: the current directory)")
     p.add_argument("--no-confine", dest="confine", action="store_false",
                    help="let the file tools reach paths outside the workspace")
-    p.add_argument("--sandbox", choices=["docker"],
-                   help="run bash and run_python in a Docker container (the workspace is mounted)")
     p.add_argument("--backend", metavar="NAME",
                    help="LLM backend or provider, e.g. openrouter, deepseek, claude, offline "
                         "(sets LLM_BACKEND)")
@@ -93,8 +92,7 @@ def setup_problem() -> str:
 def agent_options(args) -> dict:
     """Agent(...) keyword arguments from the command-line options."""
     return dict(approve="auto" if args.yes else args.approve, workspace=args.workspace,
-                confine=args.confine, sandbox=args.sandbox,
-                prompt_name="coding" if args.coding else "agent")
+                confine=args.confine, prompt_name="coding" if args.coding else "agent")
 
 
 def utf8_console():
@@ -145,7 +143,7 @@ def main(argv=None):
     print("-" * 40)
     try:
         agent = Agent(**options)
-    except (RuntimeError, ValueError) as e:      # e.g. --sandbox docker without Docker
+    except (RuntimeError, ValueError) as e:      # e.g. an unknown LLM_BACKEND
         print(f"mini_agent: {e}", file=sys.stderr)
         return 2
     result = agent.run(goal)

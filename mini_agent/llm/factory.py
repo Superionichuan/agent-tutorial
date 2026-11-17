@@ -57,17 +57,24 @@ CONFIG_KEYS = sorted({
 })
 
 
-# settings that pick the model: a layer that has any of them "configures a model"
-SELECT_KEYS = frozenset({"LLM_BACKEND", "LLM_BASE_URL", "LLM_API_KEY", "LLM_PROVIDER",
-                         *(k for k, _ in KEY_ORDER)})
+# the model setting of one backend; LLM_MODEL set in a higher layer overrides it
+MODEL_KEYS = ("DEEPSEEK_MODEL", "QWEN_MODEL", "CLAUDE_MODEL", "OLLAMA_MODEL")
+
+# settings that pick the model or the server: a layer that has any of them "configures a model"
+SELECT_KEYS = frozenset({"LLM_BACKEND", "LLM_BASE_URL", "LLM_API_KEY", "LLM_PROVIDER", "LLM_MODEL",
+                         "OLLAMA_HOST", "DEEPSEEK_BASE_URL", "ANTHROPIC_BASE_URL", "GOOGLE_API_KEY",
+                         *MODEL_KEYS, *(k for k, _ in KEY_ORDER)})
+
+ANTHROPIC_NAMES = ("anthropic", "claude")
 
 PACKAGE_ENV = Path(__file__).parent.parent.parent / ".env"
 
 
 def read_env_file(path: Path) -> dict:
-    """KEY=value lines of a .env file (comments and blank lines skipped)"""
+    """KEY=value lines of a .env file (comments and blank lines skipped). Bytes that are
+    not UTF-8 are replaced (U+FFFD), so a damaged file is reported, not fatal."""
     values = {}
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
             if line.startswith("export "):
@@ -88,23 +95,42 @@ def config_layers(env_file: Optional[Path] = None) -> list:
     else:
         files = [("./.env", Path.cwd() / ".env"), ("user config", paths.config_file())]
     for name, path in files:
-        if path.is_file():
-            layers.append((name, path, read_env_file(path)))
+        try:
+            if path.is_file():
+                layers.append((name, path, read_env_file(path)))
+        except OSError:             # unreadable: as if absent (doctor reports it)
+            pass
     if env_file is None and PACKAGE_ENV.is_file() and PACKAGE_ENV.resolve() != (Path.cwd() / ".env").resolve():
         chosen = any(v for _, _, values in layers for k, v in values.items() if k in SELECT_KEYS)
         if not chosen:
-            layers.append(("package .env", PACKAGE_ENV, read_env_file(PACKAGE_ENV)))
+            try:
+                layers.append(("package .env", PACKAGE_ENV, read_env_file(PACKAGE_ENV)))
+            except OSError:
+                pass
     return layers
 
 
 def load_config(env_file: Optional[Path] = None) -> dict:
     """The settings, each from the highest layer that has it (see the module docstring).
 
+    LLM_MODEL from a higher layer than a backend's own model setting (DEEPSEEK_MODEL,
+    ...) wins over it; in the same layer the backend's own setting wins.
     env_file: read only this file (plus the environment) instead of the usual files.
     """
+    layers = config_layers(env_file)
     config = {}
-    for _, _, values in reversed(config_layers(env_file)):
+    for _, _, values in reversed(layers):
         config.update(values)
+
+    def rank(key):
+        return next((i for i, (_, _, values) in enumerate(layers) if values.get(key)), None)
+
+    generic = rank("LLM_MODEL")
+    if generic is not None:
+        for key in MODEL_KEYS:
+            own = rank(key)
+            if own is not None and generic < own:
+                del config[key]
     return config
 
 
@@ -116,7 +142,7 @@ def choose_backend(config: dict) -> str:
     if config.get("LLM_BASE_URL"):
         return "openai_compat"
     if config.get("LLM_API_KEY"):
-        return "claude" if detect_provider(config["LLM_API_KEY"]) == "anthropic" else "openai_compat"
+        return "claude" if _key_provider(config) == "anthropic" else "openai_compat"
     for key, name in KEY_ORDER:
         if config.get(key):
             return name
@@ -140,6 +166,17 @@ def create_llm(config: Optional[dict] = None) -> BaseLLM:
     if config.get("LLM_RECORD"):
         return RecordingLLM(llm, config["LLM_RECORD"])
     return llm
+
+
+def _key_provider(config: dict) -> Optional[str]:
+    """Where LLM_API_KEY goes: the provider its prefix names; else LLM_PROVIDER
+    ("anthropic" for anthropic / claude); else None. A recognised prefix wins over
+    LLM_PROVIDER, so a key is never sent to a provider that did not issue it."""
+    detected = detect_provider(config.get("LLM_API_KEY", ""))
+    if detected:
+        return detected
+    hint = (config.get("LLM_PROVIDER") or "").strip().lower() or None
+    return "anthropic" if hint in ANTHROPIC_NAMES else hint
 
 
 def _compat(provider: Optional[str], config: dict) -> OpenAICompatLLM:
@@ -182,11 +219,15 @@ def _create_live(backend: str, config: dict) -> BaseLLM:
         )
 
     if backend in COMPAT_NAMES:
-        provider = (config.get("LLM_PROVIDER") or "").strip().lower() or None
-        if provider is None and not config.get("LLM_BASE_URL"):
-            provider = detect_provider(config.get("LLM_API_KEY", ""))
-            if provider == "anthropic":
+        if config.get("LLM_BASE_URL"):
+            # the address is given: LLM_PROVIDER only fills in defaults (model, key variable)
+            provider = (config.get("LLM_PROVIDER") or "").strip().lower() or None
+            if provider in ANTHROPIC_NAMES:
                 return _create_live("claude", config)
+            return _compat(provider, config)
+        provider = _key_provider(config)
+        if provider == "anthropic":
+            return _create_live("claude", config)
         return _compat(provider, config)
 
     if backend in PRESETS:

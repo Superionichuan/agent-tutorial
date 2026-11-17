@@ -228,29 +228,3 @@ def test_a_plain_reply_starting_with_error_is_still_a_reply():
     # text that merely starts with "Error:" (not an LLMError) is an invalid reply, as before
     answer, _, end, llm = run(["Error: I cannot do that", "Error: still no"])
     assert end["reason"] == "invalid_reply" and llm.calls == 2
-
-
-# ---- sandbox hook ----
-
-def test_sandbox_replaces_shell_tools(monkeypatch):
-    calls = []
-
-    def sandboxed_tools(kind, ws):
-        calls.append((kind, ws))
-        def bash(cmd: str) -> str:
-            return f"[container] {cmd}"
-        return {"bash": ToolSpec("bash", BUILTIN_SPECS["bash"].description,
-                                 BUILTIN_SPECS["bash"].parameters, bash, risky=True)}
-
-    monkeypatch.setitem(sys.modules, "mini_agent.tools.sandbox",
-                        types.SimpleNamespace(sandboxed_tools=sandboxed_tools))
-    ws = tempfile.mkdtemp()
-    _, res, _, _ = run([J("bash", {"cmd": "ls"}), J("done", {"answer": "ok"})], sandbox="docker", workspace=ws)
-    assert res == ["[container] ls"] and calls == [("docker", Path(ws))]
-    assert TOOLS["bash"] is BUILTIN_SPECS["bash"].fn          # the shared table is unchanged
-
-
-def test_sandbox_missing_module_is_a_clear_error(monkeypatch):
-    monkeypatch.setitem(sys.modules, "mini_agent.tools.sandbox", None)
-    with pytest.raises(RuntimeError, match="sandbox support is not installed"):
-        Agent(llm=ScriptedLLM([]), use_memory=False, skills=[], sandbox="docker")

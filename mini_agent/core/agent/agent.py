@@ -33,7 +33,6 @@ class Agent:
         prompt_name: str = "agent",  # prompts/<name>.md (e.g. "coding")
         approve=None,  # None / "auto": all run; "ask": confirm risky tools; "deny"; or a function
         confine: bool = True,  # file tools only reach paths inside the workspace
-        sandbox: Optional[str] = None,  # "docker": bash and run_python run in a container
     ):
         self.llm = llm or create_llm()  # auto-load config from .env
 
@@ -49,9 +48,6 @@ class Agent:
         # a list becomes name -> ToolSpec (callable like the function)
         self.tools = tools if isinstance(tools, dict) else dict(toolset.specs)
         self.tool_desc = toolset.desc
-        self.sandbox = sandbox
-        if sandbox:
-            self._use_sandbox(sandbox, toolset)
         self.confine = confine
 
         # Skills
@@ -65,19 +61,6 @@ class Agent:
         self.memory = Memory() if use_memory else None
         # a policy name becomes one Approval for the agent's lifetime ("always" answers persist)
         self.approve = Approval(approve) if isinstance(approve, str) else approve
-
-    def _use_sandbox(self, kind: str, toolset: ToolSet):
-        """Replace bash and run_python with versions that run in a container."""
-        try:
-            from ...tools.sandbox import sandboxed_tools
-        except ImportError:
-            raise RuntimeError("sandbox support is not installed in this version of mini_agent") from None
-        replaced = sandboxed_tools(kind, self.config.workspace)
-        tools = dict(self.tools)                 # never change the shared TOOLS table
-        for name, spec in replaced.items():
-            if name in tools:
-                tools[name] = spec
-        self.tools = tools
 
     def _load_skills(self):
         """Load skills"""

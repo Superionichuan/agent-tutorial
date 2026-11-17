@@ -80,11 +80,11 @@ def test_type_hints_map_to_json_schema():
     assert p["properties"]["a"]["type"] == "string"
     assert p["properties"]["b"]["type"] == "integer"
     assert p["properties"]["c"]["type"] == "boolean"
-    assert p["properties"]["d"] == {"type": "integer", "default": None}
+    assert p["properties"]["d"] == {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": None}
     assert p["properties"]["e"] == {"type": "array", "items": {"type": "string"}}
     assert p["properties"]["g"] == {"enum": ["x", "y"], "type": "string", "default": "x"}
     assert p["properties"]["h"] == {"type": "integer", "default": 3}
-    assert p["properties"]["i"] == {"type": "string", "default": None}
+    assert p["properties"]["i"] == {"type": "string"}           # a None default the type rejects is left out
     assert p["required"] == ["a", "b", "c"]
     assert "rest" not in p["properties"] and "additionalProperties" not in p   # **more allows extras
 
