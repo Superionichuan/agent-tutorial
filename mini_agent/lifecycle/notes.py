@@ -24,6 +24,7 @@ _USER_ENTRY = re.compile(r"^## (\d+) · (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"
 _EVIDENCE = re.compile(r"^  evidence: ", re.M)
 _STATUS = re.compile(r"^Status: (\w+)", re.M)
 _STATUS_LINE = re.compile(r"^Status: .*$", re.M)
+_SESSION = re.compile(r"^Session: (\S+)$", re.M)
 # files opened relative to a handle on .mini_agent, never through a link (POSIX)
 _AT = (os.open in os.supports_dir_fd and os.rename in os.supports_dir_fd
        and hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"))
@@ -134,6 +135,23 @@ def append_user(path: Path, text: str, message_id=None) -> bool:
 def user_messages(path: Path) -> list:
     """The entries of user.md as (number, time, text), oldest first."""
     return [entry[:3] for entry in _entries(read(path))]
+
+
+def entries(path: Path) -> list:
+    """The entries of user.md as (number, time, text, id), oldest first."""
+    return _entries(read(path))
+
+
+def session_of(message_id):
+    """The session a message id names: the part before its last "#" (None without an id)."""
+    key = message_key(message_id)
+    return key.rsplit("#", 1)[0] if key else None
+
+
+def handoff_session(text: str):
+    """The session that wrote a handoff (None for a handoff that does not say)."""
+    found = _SESSION.search(text)
+    return found.group(1) if found else None
 
 
 def _entries(text: str) -> list:

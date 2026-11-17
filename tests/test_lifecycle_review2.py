@@ -225,10 +225,12 @@ def test_a_message_sent_again_with_its_id_is_recorded_once(tmp_path):
         lc.message_id = message_id
         run_agent(lambda _: DONE, {}, "", "task", lifecycle=lc, verbose=False)
         assert lc.message_id is None                     # for one run only
-    entries = N._entries(N.read(tmp_path / ".mini_agent" / "user.md"))
-    assert [(n, text, mid) for n, _, text, mid in entries] == [
-        (1, "task", "s.jsonl#3"), (2, "task", "my_session.jsonl#5"), (3, "task", None),
-        (4, "task", None)]
+    entries = N.entries(tmp_path / ".mini_agent" / "user.md")
+    assert [(n, text, mid) for n, _, text, mid in entries[:2]] == [
+        (1, "task", "s.jsonl#3"), (2, "task", "my_session.jsonl#5")]
+    unnamed = [mid for _, _, _, mid in entries[2:]]        # runs not named: this object's session
+    assert len(unnamed) == 2 and unnamed[0] != unnamed[1]
+    assert N.session_of(unnamed[0]) == N.session_of(unnamed[1]) and unnamed[0].startswith("agent-")
 
 
 # ---------- continuing a turn; between turns ----------

@@ -16,6 +16,7 @@ one process happened to remember: a turn continued from the log (restore_steps) 
 the same decisions and sends the same prompt as the run that was cut off.
 """
 import math
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -87,7 +88,10 @@ class Lifecycle:
                   its own); without it, the memory given to start() is used
 
     message_id    set by the caller before a run (e.g. "<session file>#<seq>"): the next
-                  start() records the message once, even if it is sent again (-c)
+                  start() records the message once, even if it is sent again (-c). Its part
+                  before "#" names the session; without it, this object is one session.
+                  A new task is shown the user messages and the open handoff of its own
+                  session only: earlier tasks in the folder stay in the files.
     overflow      after before_think: the estimated tokens of a prompt that, even compacted,
                   would not fit the window (the loop stops, reason context_full); else None
     """
@@ -106,6 +110,7 @@ class Lifecycle:
         self.state, self.goal, self.resumed = None, "", False
         self._emit, self._base, self._ended = None, "", True
         self.message_id, self.overflow = None, None
+        self._session, self._own, self._runs = None, f"agent-{uuid.uuid4().hex[:8]}", 0
         self._new_turn()
 
     # ---------- sizes ----------
@@ -169,9 +174,17 @@ class Lifecycle:
         messages and the notes with evidence."""
         self.goal, self._base = str(goal), memory or ""
         message_id, self.message_id = self.message_id, None       # for this run only
+        if not self.resumed:
+            if message_id is None:                 # not named by the caller: this object's session
+                self._runs += 1
+                message_id = f"{self._own}#{self._runs}"
+            self._session = N.session_of(message_id)
         try:
             folder = N.folder(self.folder.parent)          # created with a .gitignore
-            if not self.resumed:
+            if self.resumed:                 # a continued task: the session of its own message
+                own = [mid for _, _, text, mid in N.entries(folder / "user.md") if text == self.goal]
+                self._session = N.session_of(own[-1]) if own else None
+            else:
                 N.append_user(folder / "user.md", self.goal, message_id)
         except OSError as e:
             self._warn(f"could not write {self.folder}: {e}")
@@ -201,8 +214,9 @@ class Lifecycle:
             self._follow(self.state)
         try:
             if reason == "done":
-                N.close_handoff(N.inside(self.folder.parent) / "handoff.md",
-                                f"closed · the turn finished (done) at {N.now()}")
+                path = N.inside(self.folder.parent) / "handoff.md"
+                if self._ours(N.read(path)):            # another session's open handoff stays
+                    N.close_handoff(path, f"closed · the turn finished (done) at {N.now()}")
             else:
                 self._write_handoff(f"open · stopped: {reason}", answer)
         except OSError as e:
@@ -218,6 +232,8 @@ class Lifecycle:
         try:
             folder = N.inside(self.folder.parent)
             handoff = N.open_handoff(folder / "handoff.md")
+            if handoff and not self._ours(handoff):   # an earlier task's: not this one's to continue
+                handoff = ""
             earlier = self._earlier_messages(folder)
             facts = self._facts(base)
         except OSError as e:
@@ -226,15 +242,20 @@ class Lifecycle:
         if handoff:
             parts.append("### Handoff (where the work stands; .mini_agent/handoff.md)\n" + handoff)
         if earlier:
-            parts.append("### Earlier user messages (verbatim, oldest first; .mini_agent/user.md)\n"
-                         + earlier)
+            parts.append("### Earlier user messages in this session (verbatim, oldest first; "
+                         ".mini_agent/user.md)\n" + earlier)
         if facts:
             parts.append("### Notes with evidence\n" + facts)
         parts.append(HINT)
         return "\n\n".join(parts)
 
+    def _ours(self, handoff: str) -> bool:
+        """An open handoff for this run: the task it continues, or one of this session."""
+        return self.resumed or N.handoff_session(handoff) == self._session
+
     def _earlier_messages(self, folder: Path) -> str:
-        entries = N.user_messages(folder / "user.md")
+        entries = [(n, when, text) for n, when, text, mid in N.entries(folder / "user.md")
+                   if N.session_of(mid) == self._session]     # this session's messages only
         if entries and entries[-1][2].strip() == self.goal.strip():
             entries = entries[:-1]                      # this turn's message is the [Goal]
         blocks = [f"#{n} · {when}\n{text}" for n, when, text in entries]
@@ -388,8 +409,10 @@ class Lifecycle:
         p = self.progress
         goal = self.goal if len(self.goal) <= 600 else (
             self.goal[:600] + f"… ({len(self.goal)} characters; the full text is in user.md)")
-        out = ["# Handoff", f"Status: {status}", f"Written: {N.now()}", "", "## Goal", goal, "",
-               f"## Done ({p.count} steps)"]
+        out = ["# Handoff", f"Status: {status}", f"Written: {N.now()}"]
+        if self._session:
+            out.append(f"Session: {self._session}")
+        out += ["", "## Goal", goal, "", f"## Done ({p.count} steps)"]
         if len(p.done) > 30:
             out.append(f"({len(p.done) - 30} earlier steps are not listed; the session log has them)")
         out += p.done[-30:] or ["(nothing yet)"]

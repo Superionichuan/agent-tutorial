@@ -18,7 +18,7 @@ In `<workspace>/.mini_agent/` (with a `.gitignore`, so git leaves it alone):
 | file | written | content |
 |---|---|---|
 | `user.md` | at the start of every turn | every user message, verbatim; each entry's header gives its length, so no text inside a message can end it (an entry whose length no longer holds, edited by hand or cut short by a crash, is read up to the next header) |
-| `handoff.md` | at every compaction, and when a turn stops for any reason except done | goal, steps done, next step (the plan from `todo_write`, the last thought), files written and read, commands run |
+| `handoff.md` | at every compaction, and when a turn stops for any reason except done | goal, steps done, next step (the plan from `todo_write`, the last thought), files written and read, commands run; the session that wrote it |
 
 When a turn ends with done, an open handoff is marked closed and is no longer shown.
 Nothing is read or written through a symbolic link: `.mini_agent` must be a real folder of
@@ -28,7 +28,9 @@ in while a file is opened is not followed either.
 
 A message sent again, such as a task continued with `mini_agent -c` before it started, is
 recorded once when the caller names it: `lifecycle.message_id = "<session file>#<seq>"`
-before the run (the command line does). The id goes into the entry's header.
+before the run (the command line does). The id goes into the entry's header; its part
+before `#` names the session (one interactive session, or one one-shot task). Without a
+name, one `Lifecycle` object is one session.
 
 Notes with evidence: `remember(content, evidence)`. `evidence` says how the agent knows
 it (a command and its output, a file and line, a source) and is stored under the note in
@@ -39,10 +41,15 @@ the long-term memory file. Without `evidence`, `remember` behaves as before.
 The `[Memory]` section is read from the files before every model call:
 
 - the agent's memory as before (long-term notes, today's log);
-- the handoff, while it is open;
-- the earlier user messages, verbatim (this turn's message is the `[Goal]`);
+- the handoff, while it is open and was written in this session (or the turn continues
+  the task it describes);
+- the earlier user messages of this session, verbatim (this turn's message is the `[Goal]`);
 - the notes with evidence, in full;
 - one line on how to record a note with evidence.
+
+Messages and an open handoff of earlier sessions, such as earlier one-shot tasks in the
+same folder, stay in the files and are not shown: a new task does not take them as
+requests. A task continued with `-c` is shown its own.
 
 None of these is shortened by compaction. If the user messages or the notes alone would
 take more than a quarter (messages) or 15% (notes) of the window, the oldest are left in
