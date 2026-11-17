@@ -124,13 +124,8 @@ class Agent:
         token = _workspace.current.set(self.config.workspace)  # relative tool paths start here
         limit = _workspace.confined.set(self.confine)        # file tools stay inside it
         mem = _memory.current.set(self.memory)                # remember / log write here
-        try:
+        try:   # run_agent ends the lifecycle when the run raises (a crash or Ctrl-C)
             return self._run(goal, context, verbose, on_event, conversation, state)
-        except BaseException as e:
-            if self.lifecycle is not None:   # a crash or Ctrl-C still leaves a handoff
-                self.lifecycle.end("interrupted" if isinstance(e, KeyboardInterrupt) else "error",
-                                   f"{type(e).__name__}: {e}")
-            raise
         finally:
             _memory.current.reset(mem)
             _workspace.confined.reset(limit)

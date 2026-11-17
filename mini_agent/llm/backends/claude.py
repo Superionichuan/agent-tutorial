@@ -89,6 +89,12 @@ class ClaudeLLM(BaseLLM):
         return redact(LLMError(text), self.api_key)
 
     @staticmethod
+    def _bad_count(*counts) -> bool:
+        """True when a token count is not a whole number of zero or more.
+        The counts feed the spending budget, so a malformed one is an error, not a zero."""
+        return any(isinstance(n, bool) or not isinstance(n, int) or n < 0 for n in counts)
+
+    @staticmethod
     def _message(error) -> str:
         return str(error.get("message", error)) if isinstance(error, dict) else str(error)
 
@@ -101,16 +107,24 @@ class ClaudeLLM(BaseLLM):
                 )
             except httpx.HTTPError as e:
                 return self._failed(f"Error: {type(e).__name__}: {e}")
+            if self._bad_count(inp, out):
+                return self._failed("Error: unexpected reply: the token counts are not whole numbers")
             self.total_prompt_tokens += inp
             self.total_completion_tokens += out
             return self._failed(error) if error else content
 
         data = self._request(prompt)
         if isinstance(data.get("content"), list):
-            if "usage" in data:
-                self.total_prompt_tokens += data["usage"].get("input_tokens", 0)
-                self.total_completion_tokens += data["usage"].get("output_tokens", 0)
-            return "".join(b.get("text", "") for b in data["content"] if b.get("type") == "text")
+            usage = data.get("usage") or {}
+            if not isinstance(usage, dict):
+                return self._failed("Error: unexpected reply: usage is not an object")
+            inp, out = usage.get("input_tokens", 0), usage.get("output_tokens", 0)
+            if self._bad_count(inp, out):
+                return self._failed("Error: unexpected reply: the token counts are not whole numbers")
+            self.total_prompt_tokens += inp
+            self.total_completion_tokens += out
+            return "".join(b.get("text", "") for b in data["content"]
+                           if isinstance(b, dict) and b.get("type") == "text")
         elif "error" in data:
             return self._failed(f"Error: {self._message(data['error'])}")
         return self._failed(f"Error: unexpected reply: {str(data)[:200]}")
@@ -118,11 +132,15 @@ class ClaudeLLM(BaseLLM):
     def call_with_usage(self, prompt: str) -> LLMResponse:
         data = self._request(prompt)
         if isinstance(data.get("content"), list):
-            content = "".join(b.get("text", "") for b in data["content"] if b.get("type") == "text")
-            usage = data.get("usage", {})
+            content = "".join(b.get("text", "") for b in data["content"]
+                              if isinstance(b, dict) and b.get("type") == "text")
+            usage = data.get("usage") or {}
             # Claude uses input_tokens/output_tokens
-            prompt_tokens = usage.get("input_tokens", 0)
-            completion_tokens = usage.get("output_tokens", 0)
+            prompt_tokens = usage.get("input_tokens", 0) if isinstance(usage, dict) else None
+            completion_tokens = usage.get("output_tokens", 0) if isinstance(usage, dict) else None
+            if self._bad_count(prompt_tokens, completion_tokens):
+                return LLMResponse(content=self._failed(
+                    "Error: unexpected reply: the token counts are not whole numbers"))
             self.total_prompt_tokens += prompt_tokens
             self.total_completion_tokens += completion_tokens
             return LLMResponse(

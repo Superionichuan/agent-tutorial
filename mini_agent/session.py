@@ -166,7 +166,7 @@ class SessionLog:
         if last_user > last_turn and all(e["type"] in self.BETWEEN for e in events[last_user + 1:]):
             # a task the user sent whose turn never began (nothing answered it)
             return {"goal": events[last_user]["data"].get("content", ""), "reason": "interrupted",
-                    "events": [], "pending": True,
+                    "events": [], "pending": True, "message_seq": events[last_user]["seq"],
                     "before_seq": events[last_user - 1]["seq"] if last_user > 0 else 0}
         if start is None:
             return None

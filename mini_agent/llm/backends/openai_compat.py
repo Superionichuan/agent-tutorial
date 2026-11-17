@@ -101,8 +101,8 @@ def _bad_usage(usage) -> str:
         return "usage is not an object"
     for name in ("prompt_tokens", "completion_tokens"):
         value = usage.get(name)
-        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
-            return f"usage.{name} is not a whole number"
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+            return f"usage.{name} is not a whole number of zero or more"
     return ""
 
 
@@ -115,6 +115,9 @@ def _bad_calls(calls) -> str:
     for call in calls:
         if not isinstance(call, dict):
             return "a tool call is not an object"
+        index = call.get("index")
+        if index is not None and (isinstance(index, bool) or not isinstance(index, int) or index < 0):
+            return "a tool call's index is not a whole number of zero or more"
         fn = call.get("function")
         if fn is not None and not isinstance(fn, dict):
             return "a tool call's function is not an object"

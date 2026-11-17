@@ -19,7 +19,7 @@ from ..core.policy import Approval, summarize_call
 from ..session import SessionLog
 from . import pets, theme
 from .common import (PLAN_GUIDANCE, SESS_DIR, compact_notice, latest_session, new_session_path,
-                     resume_state, session_conversation, stop_notice)
+                     mark_message, resume_state, session_conversation, stop_notice)
 
 SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -267,6 +267,8 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
             conversation = conversation_text(until_seq=unfinished["before_seq"])
             if plan_active:
                 conversation = PLAN_GUIDANCE + conversation
+            if state is None:                 # its message is logged; record it in user.md once
+                mark_message(agent, log, unfinished.get("message_seq"))
             run_turn(unfinished["goal"], conversation, state=state)
 
     while True:
@@ -292,7 +294,7 @@ def run_repl(resume: bool = False, agent_options: dict | None = None):
         conversation = session_conversation(agent, log, conversation_text)
         if plan_active:
             conversation = PLAN_GUIDANCE + conversation
-        log.append("user/message", content=goal)
+        mark_message(agent, log, log.append("user/message", content=goal)["seq"])
         run_turn(goal, conversation)
 
 

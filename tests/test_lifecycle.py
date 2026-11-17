@@ -434,6 +434,7 @@ def test_compact_kill_continue_sends_the_prompt_it_would_have_sent(tmp_path, mon
 
     llm = Scripted([("done", {"answer": "4217"})], window=KILL_WINDOW)
     agent = agent_for(tmp_path, llm)
+    used = state.steps_done                                   # step numbers the log already has
     answer = agent.run(unfinished["goal"], on_event=lambda t, **d: log.append(t, **d), state=state)
     assert answer == "4217"
     assert llm.prompts[0] == would_have_sent                  # the same context, byte for byte
@@ -441,7 +442,7 @@ def test_compact_kill_continue_sends_the_prompt_it_would_have_sent(tmp_path, mon
     resumed = [e for e in log.events() if e["type"] == "turn/start"][-1]
     assert resumed["data"].get("resumed") is True
     first = [e for e in log.events() if e["type"] == "step/start"][-1]
-    assert first["data"]["step"] == state.steps_done + 1      # numbering goes on
+    assert first["data"]["step"] == used + 1                  # numbering goes on
     user_md = tmp_path / "ws" / ".mini_agent" / "user.md"
     assert [t for _, _, t in N.user_messages(user_md)] == [KILL_GOAL]
 

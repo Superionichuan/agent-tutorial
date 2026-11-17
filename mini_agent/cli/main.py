@@ -165,6 +165,14 @@ def main(argv=None):
         return 2
 
     if not args.task:
+        # Settings that cannot work (an unknown LLM_BACKEND, a key meant for another
+        # provider) are a message here, as in one-shot mode, not a traceback later.
+        from ..llm import create_llm
+        try:
+            create_llm()
+        except (RuntimeError, ValueError) as e:
+            print(f"mini_agent: {e}", file=sys.stderr)
+            return 2
         if args.tui:
             # full textual UI (--tui)
             from ..ui.tui import MiniAgentApp
@@ -185,7 +193,7 @@ def main(argv=None):
     from ..core import Agent
     from ..core.agent.run import console_renderer
     from ..session import SessionLog
-    from ..ui.common import SESS_DIR, new_session_path, stop_notice
+    from ..ui.common import SESS_DIR, mark_message, new_session_path, stop_notice
     goal = " ".join(args.task)
     print(f"Query: {goal}")
     print("-" * 40)
@@ -195,7 +203,7 @@ def main(argv=None):
         print(f"mini_agent: {e}", file=sys.stderr)
         return 2
     log = SessionLog(new_session_path(SESS_DIR))
-    log.append("user/message", content=goal)
+    mark_message(agent, log, log.append("user/message", content=goal)["seq"])
 
     def on_event(type, /, **data):
         log.append(type, **data)

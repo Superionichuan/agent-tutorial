@@ -41,7 +41,7 @@ from ..core.policy import Approval, summarize_call
 from ..session import SessionLog
 from .common import (PLAN_GUIDANCE, SESS_DIR,  # noqa: F401 (also imported from here)
                      compact_notice, latest_session, new_session_path, resume_state,
-                     session_conversation, stop_notice)
+                     mark_message, session_conversation, stop_notice)
 
 
 
@@ -524,13 +524,16 @@ class MiniAgentApp(App):
             if state is not None:
                 options["state"] = state
             conversation = self._conversation_text(until_seq=unfinished["before_seq"])
+            if state is None:                         # record its message in user.md once
+                mark_message(self.agent, self.session_log, unfinished.get("message_seq"))
         else:
             # long-running: the earlier conversation within its budget
             conversation = session_conversation(self.agent, self.session_log, self._conversation_text)
         if self.plan_active:
             conversation = PLAN_GUIDANCE + conversation
         if unfinished is None:
-            self.session_log.append("user/message", content=goal)
+            event = self.session_log.append("user/message", content=goal)
+            mark_message(self.agent, self.session_log, event["seq"])
         def on_event(type: str, /, **d):
             self.session_log.append(type, **d)               # persist
             self.call_from_thread(self._on_event, type, d)   # render on UI thread

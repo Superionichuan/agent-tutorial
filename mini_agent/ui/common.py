@@ -39,6 +39,14 @@ def session_conversation(agent, log, plain_text) -> str:
     return plain_text()
 
 
+def mark_message(agent, log, seq) -> None:
+    """Tell the lifecycle which logged user message the next run answers (session file and
+    seq), so user.md records it once, even when -c runs a task again that was sent but
+    never started."""
+    if getattr(agent, "lifecycle", None) is not None and seq is not None:
+        agent.lifecycle.message_id = f"{Path(log.path).name}#{seq}"
+
+
 def _session_order(path: Path):
     """Sort key: <seconds>[_<n>] names (new_session_path) by seconds, then n as a number
     (so _100 comes after _99); any other name by its modification time."""
@@ -48,12 +56,32 @@ def _session_order(path: Path):
     return int(path.stat().st_mtime), 0, path.name
 
 
+def _has_message(path: Path) -> bool:
+    """True when the log holds a user message or a started turn. A session that was
+    opened and left without one (an empty file, or only a setting such as plan mode)
+    has nothing to continue."""
+    import json
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(event, dict) and event.get("type") in ("user/message", "turn/start"):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def latest_session(directory: Optional[Path] = None) -> Optional[Path]:
-    """The most recent session log that has any events, or None. An empty file is a
-    session that was opened and left without a message: there is nothing to continue."""
-    files = [p for p in (directory or SESS_DIR).glob("*.jsonl")
-             if p.is_file() and p.stat().st_size > 0]
-    return max(files, key=_session_order, default=None)
+    """The most recent session log that holds a user message, or None."""
+    files = [p for p in (directory or SESS_DIR).glob("*.jsonl") if p.is_file() and p.stat().st_size > 0]
+    for path in sorted(files, key=_session_order, reverse=True):
+        if _has_message(path):
+            return path
+    return None
 
 
 def resume_state(unfinished: dict):
