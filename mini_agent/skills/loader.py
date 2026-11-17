@@ -63,7 +63,7 @@ def load_skill(skill_dir: Path) -> Optional[Skill]:
     if not skill_file.is_file():
         return None
     try:
-        content = skill_file.read_text()
+        content = skill_file.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
     fm, body = parse_frontmatter(content)

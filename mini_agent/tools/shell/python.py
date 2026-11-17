@@ -3,6 +3,7 @@ import subprocess
 import sys
 
 from ..workspace import cwd
+from .bash import decode, utf8_env
 
 
 def run_python(code: str) -> str:
@@ -11,11 +12,11 @@ def run_python(code: str) -> str:
         result = subprocess.run(
             [sys.executable, "-c", code],
             capture_output=True,
-            text=True,
             timeout=120,
-            cwd=cwd()
+            cwd=cwd(),
+            env=utf8_env(),
         )
-        output = result.stdout + result.stderr
+        output = decode(result.stdout) + decode(result.stderr)
         return output if output else "OK"
     except subprocess.TimeoutExpired:
         return "Error: execution timeout"

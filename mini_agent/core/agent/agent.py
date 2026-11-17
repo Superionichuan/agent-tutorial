@@ -12,6 +12,7 @@ from ...mem import Memory
 from ...mem import memory as _memory
 from ...skills import format_skills_prompt, list_skills
 from ...tools import workspace as _workspace
+from ...tools.shell.bash import describe_system
 
 
 class Agent:
@@ -116,7 +117,7 @@ class Agent:
     def run(self, goal: str, verbose: bool = True, on_event=None, conversation: str = "") -> str:
         """Run a goal. on_event(type, **data) receives the event stream (None = console output)."""
         workspace_str = get_workspace_str(self.config.workspace)
-        context = f"Workspace: {workspace_str}\n\n{self.tool_desc}"
+        context = f"Workspace: {workspace_str}\nSystem: {describe_system()}\n\n{self.tool_desc}"
         try:
             self.config.workspace.mkdir(parents=True, exist_ok=True)
         except OSError:

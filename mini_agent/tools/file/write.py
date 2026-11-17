@@ -7,7 +7,7 @@ def write_file(path: str, content: str) -> str:
     try:
         target = resolve(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content)
+        target.write_text(content, encoding="utf-8")
         return f"OK: {target}"
     except Exception as e:
         return f"Error: {e}"

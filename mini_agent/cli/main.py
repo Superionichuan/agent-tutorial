@@ -1,5 +1,7 @@
 """Command line
 
+  mini_agent setup                 choose a model provider and paste a key (once)
+  mini_agent doctor                what is installed and which model is set up
   mini_agent                       interactive session in the terminal
   mini_agent "task"                run one task and exit
   mini_agent --tui                 full-screen interface
@@ -14,7 +16,10 @@ from .. import __version__
 from ..core.policy import POLICIES
 
 SETUP_HELP = """\
-Choosing a model (environment variables, or a .env file in the current directory):
+First time: `mini_agent setup` asks for a provider and a key and saves them in
+~/.mini_agent/config.env; `mini_agent doctor` shows what is set up.
+
+Or choose a model with environment variables (or a .env file in the current directory):
   OPENROUTER_API_KEY=sk-or-...            many models through one key (openrouter.ai)
   DEEPSEEK_API_KEY=sk-...                 DeepSeek
   ANTHROPIC_API_KEY=sk-ant-...            Claude
@@ -32,7 +37,7 @@ puts bash and run_python in a container.
 
 NO_MODEL = """\
 mini_agent: no model is configured, and no local Ollama server is answering.
-Set one of these in the environment or in a .env file here, then run again:
+Run `mini_agent setup` to choose one, or set one of these (environment or a .env file here):
   OPENROUTER_API_KEY=sk-or-...     DEEPSEEK_API_KEY=sk-...     ANTHROPIC_API_KEY=sk-ant-...
   LLM_BASE_URL=http://host:port/v1 and LLM_MODEL=...   (any OpenAI-compatible server)
   LLM_BACKEND=offline              (a recorded demo; no key needed)
@@ -92,9 +97,24 @@ def agent_options(args) -> dict:
                 prompt_name="coding" if args.coding else "agent")
 
 
+def utf8_console():
+    """Windows consoles and pipes default to a legacy code page: write UTF-8 instead."""
+    if os.name == "nt":
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def main(argv=None):
     """Main entry"""
-    args = build_parser().parse_args(sys.argv[1:] if argv is None else argv)
+    argv = sys.argv[1:] if argv is None else list(argv)
+    utf8_console()
+    if argv and argv[0] in ("setup", "doctor"):
+        from . import doctor, setup
+        return (setup if argv[0] == "setup" else doctor).main(argv[1:])
+    args = build_parser().parse_args(argv)
     if args.task and args.task[0] == "--":
         args.task = args.task[1:]
     if args.backend:

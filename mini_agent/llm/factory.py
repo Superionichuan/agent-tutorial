@@ -1,7 +1,14 @@
 """LLM factory: create an LLM instance from config
 
-Settings come from a .env file (the current directory, then the package root)
-and from the environment, which wins. The backend is chosen by, in order:
+Each setting takes its value from the first of these that has it:
+  1. command-line flags (--backend, --model)
+  2. environment variables
+  3. a .env file in the current directory
+  4. ~/.mini_agent/config.env, written by `mini_agent setup` ($MINI_AGENT_HOME)
+  5. a .env file next to the installed package. Older notebooks write one; it is
+     ignored whenever 1-4 configure a model, so it never overrides your choice.
+
+The backend is chosen by, in order:
 
 1. LLM_BACKEND: offline | ollama | qwen | deepseek | claude (or anthropic) |
    openai_compat | a provider preset: openrouter, openai, gemini, groq, xai,
@@ -22,6 +29,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from .. import paths
 from .base import BaseLLM
 from .backends import OllamaLLM, QwenLLM, DeepSeekLLM, ClaudeLLM
 from .backends.openai_compat import PRESETS, OpenAICompatLLM, detect_provider
@@ -49,32 +57,54 @@ CONFIG_KEYS = sorted({
 })
 
 
+# settings that pick the model: a layer that has any of them "configures a model"
+SELECT_KEYS = frozenset({"LLM_BACKEND", "LLM_BASE_URL", "LLM_API_KEY", "LLM_PROVIDER",
+                         *(k for k, _ in KEY_ORDER)})
+
+PACKAGE_ENV = Path(__file__).parent.parent.parent / ".env"
+
+
+def read_env_file(path: Path) -> dict:
+    """KEY=value lines of a .env file (comments and blank lines skipped)"""
+    values = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("export "):
+                line = line[7:].strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def config_layers(env_file: Optional[Path] = None) -> list:
+    """[(name, path or None, {key: value})], highest priority first; the package .env is
+    left out when a higher layer already configures a model."""
+    env = {k: os.environ[k] for k in CONFIG_KEYS if k in os.environ}
+    layers = [("environment", None, env)]
+    if env_file is not None:
+        files = [("file", Path(env_file))]
+    else:
+        files = [("./.env", Path.cwd() / ".env"), ("user config", paths.config_file())]
+    for name, path in files:
+        if path.is_file():
+            layers.append((name, path, read_env_file(path)))
+    if env_file is None and PACKAGE_ENV.is_file() and PACKAGE_ENV.resolve() != (Path.cwd() / ".env").resolve():
+        chosen = any(v for _, _, values in layers for k, v in values.items() if k in SELECT_KEYS)
+        if not chosen:
+            layers.append(("package .env", PACKAGE_ENV, read_env_file(PACKAGE_ENV)))
+    return layers
+
+
 def load_config(env_file: Optional[Path] = None) -> dict:
-    """Load config from a .env file, then the environment (which wins)"""
+    """The settings, each from the highest layer that has it (see the module docstring).
+
+    env_file: read only this file (plus the environment) instead of the usual files.
+    """
     config = {}
-
-    # locate the .env file
-    if env_file is None:
-        # search order: cwd -> package root
-        for path in [Path.cwd() / ".env", Path(__file__).parent.parent.parent / ".env"]:
-            if path.exists():
-                env_file = path
-                break
-
-    # parse the .env file
-    if env_file and env_file.exists():
-        with open(env_file) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, value = line.split("=", 1)
-                    config[key.strip()] = value.strip().strip('"').strip("'")
-
-    # environment variables take precedence
-    for key in CONFIG_KEYS:
-        if key in os.environ:
-            config[key] = os.environ[key]
-
+    for _, _, values in reversed(config_layers(env_file)):
+        config.update(values)
     return config
 
 

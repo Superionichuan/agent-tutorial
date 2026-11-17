@@ -50,7 +50,8 @@ def _mask_output(text: str, ws: str = "") -> str:
 def normalize(text: str) -> str:
     """Remove the parts of a prompt that vary between machines and days."""
     ws = _workspace(text)
-    t = text.replace(ws, "<ws>") if ws else text
+    t = re.sub(r"^System: .*\n", "", text, flags=re.M)   # the OS / shell line
+    t = t.replace(ws, "<ws>") if ws else t
     t = t.replace(str(Path.home()), "~")
     t = re.sub(r"(\[Memory\]\n).*?(\n\n\[Steps taken so far\])", r"\1<memory>\2", t, flags=re.S)
     h = re.search(r"(\[Steps taken so far\]\n)(.*?)(?=\n\n\[|\Z)", t, re.S)
@@ -80,7 +81,7 @@ class OfflineLLM(BaseLLM):
 
     def __init__(self, path: str | Path | None = None):
         self.path = Path(path) if path else DEFAULT_RECORDING
-        self.records = [json.loads(line) for line in self.path.read_text().splitlines()
+        self.records = [json.loads(line) for line in self.path.read_text(encoding="utf-8").splitlines()
                         if line.strip()] if self.path.exists() else []
         source = self.records[0].get("model", "") if self.records else ""
         self.model = f"offline (recorded from {source})" if source else "offline"
@@ -151,7 +152,7 @@ class RecordingLLM(BaseLLM):
         rec.update(response=response.replace(str(Path.home()), "~"),
                    prompt_tokens=dp, completion_tokens=dc, model=self.model)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.path, "a") as f:
+        with open(self.path, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         return response
 

@@ -3,18 +3,14 @@
 Memory files live in ~/.mini_agent/memory, or $MINI_AGENT_HOME/memory when that
 variable is set (not inside the installed package, where they were before 2.0).
 """
-import os
 from contextvars import ContextVar
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+
+from ..paths import home
 
 # the memory of the agent that is running: the remember and log tools write there
 current: ContextVar = ContextVar("memory", default=None)
-
-
-def home() -> Path:
-    """mini_agent's own directory: $MINI_AGENT_HOME, else ~/.mini_agent"""
-    return Path(os.environ.get("MINI_AGENT_HOME") or Path.home() / ".mini_agent").expanduser()
 
 
 class Memory:
@@ -39,7 +35,7 @@ class Memory:
         """Read long-term memory (with an insertion budget: keep head + recent tail when over budget)."""
         if not self.long_term_file.exists():
             return ""
-        text = self.long_term_file.read_text()
+        text = self.long_term_file.read_text(encoding="utf-8")
         if len(text) <= budget_chars:
             return text
         head, tail_n = budget_chars // 3, budget_chars * 2 // 3
@@ -49,30 +45,30 @@ class Memory:
         """Distill: LLM merges and rewrites long-term memory (original backed up as .bak). Long-run maintenance."""
         if not self.long_term_file.exists():
             return False
-        text = self.long_term_file.read_text()
+        text = self.long_term_file.read_text(encoding="utf-8")
         distilled = llm(
             "Distill and rewrite the following long-term memory notes: merge duplicates / keep every unique fact and preference / group by topic / be concise:\n"
             + text + "\n\nDistilled memory:")
         if not distilled or len(distilled) >= len(text):
             return False                       # convergence guard
-        self.long_term_file.with_suffix(".md.bak").write_text(text)
-        self.long_term_file.write_text(distilled + "\n")
+        self.long_term_file.with_suffix(".md.bak").write_text(text, encoding="utf-8")
+        self.long_term_file.write_text(distilled + "\n", encoding="utf-8")
         return True
 
     def get_today_log(self) -> str:
         """Read today's log"""
         if self.today_log_file.exists():
-            return self.today_log_file.read_text()
+            return self.today_log_file.read_text(encoding="utf-8")
         return ""
 
     def append_log(self, content: str):
         """Append to today's log"""
-        with open(self.today_log_file, "a") as f:
+        with open(self.today_log_file, "a", encoding="utf-8") as f:
             f.write(f"\n{content}\n")
 
     def append_memory(self, content: str):
         """Append to long-term memory"""
-        with open(self.long_term_file, "a") as f:
+        with open(self.long_term_file, "a", encoding="utf-8") as f:
             f.write(f"\n{content}\n")
 
     def save_output(self, filename: str, content: str):
@@ -80,7 +76,7 @@ class Memory:
         output_dir = self.mem_dir.parent / "output"
         output_dir.mkdir(exist_ok=True)
         output_file = output_dir / filename
-        output_file.write_text(content)
+        output_file.write_text(content, encoding="utf-8")
         return str(output_file)
 
 
