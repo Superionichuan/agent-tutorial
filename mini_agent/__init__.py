@@ -21,6 +21,7 @@ __version__ = "1.2.2"
 from .core import Agent, State
 from .session import SessionLog, new_call_id
 from .tools import TOOLS, TOOL_DESC, calc, read_file, write_file, list_dir, bash, run_python
+from .tools import tool, ToolSpec, default_tools
 from .llm import BaseLLM, create_llm
 from .mem import Memory, get_long_term, get_today_log, append_log, append_memory
 from .skills import Skill, load_skills, get_skill, list_skills
@@ -28,7 +29,7 @@ from .skills import Skill, load_skills, get_skill, list_skills
 __all__ = [
     "Agent", "State",
     "SessionLog", "new_call_id",
-    "TOOLS", "TOOL_DESC",
+    "TOOLS", "TOOL_DESC", "tool", "ToolSpec", "default_tools",
     "calc", "read_file", "write_file", "list_dir", "bash", "run_python",
     "BaseLLM", "create_llm",
     "Memory", "get_long_term", "get_today_log", "append_log", "append_memory",

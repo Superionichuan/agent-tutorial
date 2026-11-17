@@ -21,6 +21,7 @@ One event stream, many consumers:
 """
 from ..state import State, add_step, format_history
 from ..executor import execute
+from ...tools.spec import ToolSet
 from .think import think
 from .check_done import is_done
 
@@ -48,8 +49,8 @@ def console_renderer(type: str, **d):
 
 def run_agent(
     llm,
-    tools: dict,
-    tool_desc: str,
+    tools,
+    tool_desc,
     goal: str,
     max_steps: int = 100,
     max_tokens: int = 130000,
@@ -64,10 +65,14 @@ def run_agent(
 ) -> str:
     """Run the agent main loop.
 
+    tools: a list of functions / ToolSpecs, or a dict of name -> function.
+    tool_desc: the [Tools] text; None = rendered from the tools.
     on_event(type, **data): event callback. None = default console rendering.
     conversation: prior dialogue of this session (projected from the session log).
     approve(action, args) -> bool: optional policy check before each tool call.
     """
+    toolset = ToolSet.build(tools, tool_desc)
+    funcs, tool_desc = toolset.funcs, toolset.desc
     if on_event is None:
         emit = console_renderer if verbose else (lambda type, **d: None)
     else:
@@ -147,7 +152,7 @@ def run_agent(
         # 5. Execute
         call_id = f"s{step}"
         emit("tool/call", step=step, call_id=call_id, name=action, args=args)
-        result = execute(action, args, tools, approve)
+        result = execute(action, args, funcs, approve)
         failed = result.startswith("Error:")  # tools report failures with this prefix
         emit("tool/result", step=step, call_id=call_id, content=result, is_error=failed)
         if action == "todo_write" and not failed:

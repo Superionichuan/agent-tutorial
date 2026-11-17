@@ -6,6 +6,7 @@ from ..config import AgentConfig, get_workspace_str
 from .run import run_agent
 from ...llm import create_llm
 from ...tools import TOOLS, TOOL_DESC
+from ...tools.spec import ToolSet
 from ...mem import Memory
 from ...skills import format_skills_prompt, list_skills
 from ...tools import workspace as _workspace
@@ -19,8 +20,8 @@ class Agent:
         name: str = "agent",
         workspace: str | Path = None,
         llm: Callable[[str], str] = None,
-        tools: Dict[str, Callable] = None,
-        tool_desc: str = None,
+        tools=None,  # list of functions / ToolSpecs, or dict name -> function; None = built-ins
+        tool_desc: str = None,  # None = rendered from the tools
         model: str = None,
         max_tokens: int = None,  # None = derive from the LLM
         max_steps: int = 100,
@@ -36,8 +37,13 @@ class Agent:
             max_tokens = getattr(self.llm, 'context_limit', 128_000)
 
         self.config = AgentConfig(name, workspace, model, max_tokens, max_steps)
-        self.tools = tools or TOOLS
-        self.tool_desc = tool_desc or TOOL_DESC
+        if tools is None or (isinstance(tools, dict) and not tools):
+            tools = TOOLS                      # as before: no tools given = the built-ins
+        toolset = ToolSet.build(tools, tool_desc or None)
+        # a dict given (or TOOLS) stays the tool table, as before;
+        # a list becomes name -> ToolSpec (callable like the function)
+        self.tools = tools if isinstance(tools, dict) else dict(toolset.specs)
+        self.tool_desc = toolset.desc
 
         # Skills
         self._skills = skills  # None=all, []=none, ['a','b']=specific
