@@ -29,6 +29,26 @@ from .common import (EXIT_BUSY, PLAN_GUIDANCE, SESS_DIR, compact_notice, exit_st
                      shows_answer, stop_notice)
 
 SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+# The live area shows only the newest lines of the reasoning and of the reply being streamed,
+# and the running tool on one line, so it stays well below the screen height: a live area
+# taller than the screen leaves its lines in the scrollback when it is cleared.
+REASONING_LINES = 4
+TEXT_LINES = 6
+
+
+def _last_lines(text: Text, console, width: int, count: int) -> list:
+    """The last `count` lines of `text` as wrapped at `width`."""
+    return list(text.wrap(console, width))[-count:]
+
+
+def _restarted(live: Live) -> Live:
+    """A new Live with the same renderable, started below the lines printed while `live` was
+    stopped. Starting `live` itself again would first move the cursor up by the height of its
+    last frame (Rich keeps it), over those lines, and erase the approval prompt."""
+    fresh = Live(live.get_renderable(), console=live.console, auto_refresh=live.auto_refresh,
+                 refresh_per_second=live.refresh_per_second, transient=live.transient)
+    fresh.start()
+    return fresh
 
 
 class LiveStatus:
@@ -46,7 +66,8 @@ class LiveStatus:
         frame = int((time.time() - self.started) * 12)
         spin = SPIN[frame % len(SPIN)]
         secs = time.time() - self.started
-        head = Text()
+        head = Text(no_wrap=True, overflow="ellipsis")
+        width = options.max_width
         if self.mode == "tool":
             head.append(f"{spin} ", style=f"bold {theme.WARNING}")
             head.append(theme.shimmer_text("Running…", frame, base=theme.WARNING,
@@ -61,17 +82,21 @@ class LiveStatus:
         head.append(f" ({secs:.0f}s)", style=theme.SUBTLE)
         yield head
         if self.reasoning:
-            yield Text(self.reasoning, style=f"italic {theme.SUBTLE}")
+            # only the tail is wrapped: a long reasoning is not re-wrapped on every frame
+            tail = Text(self.reasoning[-width * REASONING_LINES * 2:],
+                        style=f"italic {theme.SUBTLE}")
+            yield from _last_lines(tail, console, width, REASONING_LINES)
         if self.text:
             body = Text()
             glow = 100
-            if len(self.text) > glow:
-                body.append(self.text[:-glow], style=theme.INACTIVE)
-            body.append(theme.shimmer_text(self.text[-glow:], frame,
+            tail = self.text[-max(glow, width * TEXT_LINES * 2):]
+            if len(tail) > glow:
+                body.append(tail[:-glow], style=theme.INACTIVE)
+            body.append(theme.shimmer_text(tail[-glow:], frame,
                                            base=theme.INACTIVE,
                                            light=theme.INACTIVE_SHIMMER,
                                            wavelength=14.0, speed=1.6, bold=False))
-            yield body
+            yield from _last_lines(body, console, width, TEXT_LINES)
 
 
 def _print_think(console, d):
@@ -177,7 +202,7 @@ def run_repl(resume: bool = False, agent_options: dict | None = None,
             typed = "n"
         finally:
             if live is not None:
-                live.start()
+                live_now[-1] = _restarted(live)
         return ANSWERS.get(typed.strip().lower(), "no")
 
     options = dict(agent_options or {})
@@ -296,7 +321,9 @@ def run_repl(resume: bool = False, agent_options: dict | None = None,
                 ended["reason"] = "error"
                 live.console.print(Text(f"[internal error] {e}", style=theme.ERROR))
             finally:
-                live_now.pop()
+                shown = live_now.pop()
+                if shown is not live:          # the one started after an approval prompt
+                    shown.stop()
         return ended["reason"]
 
     if latest is not None:
