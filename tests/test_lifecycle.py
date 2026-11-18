@@ -201,12 +201,12 @@ def test_token_limit_is_a_spending_budget_compaction_does_not_reset_it(tmp_path,
 def test_user_messages_are_appended_verbatim_and_not_twice_on_resume(tmp_path):
     lc = Lifecycle(tmp_path)
     lc.attach(lambda *a, **k: None, None)
-    messages = ["first message\nwith two lines", "## 3 · not a header, just text", "第三条：中文"]
+    messages = ["first message\nwith two lines", "## 3 · not a header, just text", "третье: кириллица"]
     for text in messages:
         lc.attach(lambda *a, **k: None, None)
         memory = lc.start(text, "")
     assert [t for _, _, t in N.user_messages(tmp_path / ".mini_agent" / "user.md")] == messages
-    assert messages[0] in memory and messages[1] in memory and "第三条" not in memory   # current = [Goal]
+    assert messages[0] in memory and messages[1] in memory and "третье" not in memory   # current = [Goal]
     lc.attach(lambda *a, **k: None, None, resumed=True)
     lc.start(messages[-1], "")
     assert len(N.user_messages(tmp_path / ".mini_agent" / "user.md")) == 3

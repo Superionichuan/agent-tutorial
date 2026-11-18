@@ -211,10 +211,10 @@ def test_system_line_names_the_shell():
 
 def test_powershell_command_is_encoded(monkeypatch):
     monkeypatch.setenv("MINI_AGENT_SHELL", "powershell")
-    argv = shell_mod.command_line('Write-Output "你好 $((1))"')
+    argv = shell_mod.command_line('Write-Output "สวัสดี $((1))"')
     assert argv[1:4] == ["-NoProfile", "-NonInteractive", "-EncodedCommand"]
     script = base64.b64decode(argv[4]).decode("utf-16-le")
-    assert script.endswith('Write-Output "你好 $((1))"') and "UTF8" in script
+    assert script.endswith('Write-Output "สวัสดี $((1))"') and "UTF8" in script
     assert script.startswith("$ProgressPreference = 'SilentlyContinue'; ")
 
 
@@ -248,7 +248,7 @@ def test_powershell_warnings_keep_their_label_and_colours_are_removed():
 @pytest.mark.skipif(not shutil.which("pwsh"), reason="needs PowerShell 7 (pwsh)")
 def test_real_powershell_output_is_plain_text(monkeypatch):
     monkeypatch.setenv("MINI_AGENT_SHELL", shutil.which("pwsh"))
-    assert shell_mod.bash('Write-Output "你好"').strip() == "你好"
+    assert shell_mod.bash('Write-Output "สวัสดี"').strip() == "สวัสดี"
     out = shell_mod.bash("Write-Warning careful; Get-Item ./no/such/file; Write-Output after")
     assert "CLIXML" not in out and "\x1b" not in out and "after" in out
     assert "WARNING: careful" in out and "Cannot find path" in out
@@ -261,12 +261,12 @@ def test_other_error_output_is_unchanged():
 
 def test_powershell_output_without_progress_noise(monkeypatch):
     class Done:
-        stdout = "你好\r\n".encode("utf-8")
+        stdout = "สวัสดี\r\n".encode("utf-8")
         stderr = PS_PROGRESS.encode("utf-8")
 
     monkeypatch.setenv("MINI_AGENT_SHELL", "powershell")
     monkeypatch.setattr(shell_mod.subprocess, "run", lambda *a, **k: Done())
-    assert shell_mod.bash('Write-Output "你好"') == "你好\r\n"
+    assert shell_mod.bash('Write-Output "สวัสดี"') == "สวัสดี\r\n"
 
 
 def test_shell_override_and_utf8_output(monkeypatch):
@@ -274,7 +274,7 @@ def test_shell_override_and_utf8_output(monkeypatch):
         pytest.skip("POSIX shells")
     monkeypatch.setenv("MINI_AGENT_SHELL", "sh")
     assert shell_mod.shell()[0] == "sh"
-    assert shell_mod.bash("printf '%s\\n' 中文") == "中文\n"
+    assert shell_mod.bash("printf '%s\\n' สวัสดี") == "สวัสดี\n"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows only")
@@ -282,7 +282,7 @@ def test_windows_shells_and_paths(monkeypatch, tmp_path):
     kind, exe = shell_mod.shell()
     assert kind in ("bash", "powershell") and "system32\\bash" not in exe.lower()
     monkeypatch.setenv("MINI_AGENT_SHELL", "powershell")
-    assert shell_mod.bash('Write-Output "你好"').strip() == "你好"
+    assert shell_mod.bash('Write-Output "สวัสดี"').strip() == "สวัสดี"
     out = shell_mod.bash("Get-Item C:\\no\\such\\file")       # Windows PowerShell 5.1
     assert "CLIXML" not in out and "Cannot find path" in out
     from mini_agent.tools import read_file, workspace
@@ -292,8 +292,8 @@ def test_windows_shells_and_paths(monkeypatch, tmp_path):
     try:
         assert "outside the workspace" in read_file("..\\secret.txt")
         assert "outside the workspace" in read_file("C:\\Windows\\win.ini")
-        (ws / "中文.txt").write_text("内容", encoding="utf-8")
-        assert read_file("中文.txt") == "内容"
+        (ws / "שלום.txt").write_text("תוכן", encoding="utf-8")
+        assert read_file("שלום.txt") == "תוכן"
     finally:
         workspace.confined.reset(limit)
         workspace.current.reset(token)
