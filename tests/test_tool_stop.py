@@ -112,38 +112,45 @@ def test_ctrl_c_in_the_interactive_mode_stops_the_tool_and_returns_to_the_prompt
     os.close(slave)
     seen = b""
 
+    def read(timeout=0.2) -> None:      # keep reading: a full terminal buffer (small on
+        nonlocal seen                      # macOS) blocks the program before it runs the tool
+        if select.select([master], [], [], timeout)[0]:
+            try:
+                seen += os.read(master, 65536)
+            except OSError:
+                pass
+
     def wait_text(text: bytes, start=0, timeout=60):
-        nonlocal seen
         end = time.time() + timeout
         while text not in seen[start:]:
             assert time.time() < end, f"did not see {text!r}:\n{seen[-1500:]!r}"
-            if select.select([master], [], [], 0.2)[0]:
-                try:
-                    seen += os.read(master, 65536)
-                except OSError:
-                    break
+            read()
+
+    def wait_reading(condition, timeout=60) -> bool:
+        end = time.time() + timeout
+        while not condition():
+            if time.time() > end:
+                return False
+            read()
+        return True
 
     try:
         wait_text(b"\xe2\x9d\xaf")                       # the prompt
         os.write(master, b"run it\r")
-        assert wait_for(lambda: started.exists() and running(sleeper), 60)
+        assert wait_reading(lambda: started.exists() and running(sleeper)), seen[-1500:]
         mark = len(seen)
         os.write(master, b"\x03")                        # Ctrl+C on the terminal
         wait_text(b"Interrupted", start=mark)
         wait_text(b"\xe2\x9d\xaf", start=seen.rindex(b"Interrupted"))
-        time.sleep(1)
-        assert not running(sleeper)
+        assert wait_reading(lambda: not running(sleeper), 5)
         assert proc.poll() is None                      # still running, at the prompt
         for _ in range(10):
             try:
                 os.write(master, b"/exit\r")
             except OSError:
                 break
-            try:
-                proc.wait(timeout=3)
+            if wait_reading(lambda: proc.poll() is not None, 3):
                 break
-            except subprocess.TimeoutExpired:
-                pass
     finally:
         if proc.poll() is None:
             proc.kill()

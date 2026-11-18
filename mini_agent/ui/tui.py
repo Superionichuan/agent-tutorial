@@ -167,7 +167,7 @@ class PetSplash(Msg):
     def render(self):
         art = pets.render_pet(self.pet, self._frame)
         art.append(pets.PETS[self.pet]["banner"], style=theme.INACTIVE)
-        art.append("  — mini_agent · NTU · Schmidt Science · @shichuan", style=theme.SUBTLE)
+        art.append("  — mini_agent · NTU · Schmidt Sciences · @shichuan", style=theme.SUBTLE)
         return art
 
 

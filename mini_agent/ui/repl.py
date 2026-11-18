@@ -219,7 +219,7 @@ def run_repl(resume: bool = False, agent_options: dict | None = None,
         console.print(pets.render_pet(pet, 0))
         banner = Text(pets.PETS[pet]["banner"], style=theme.INACTIVE)
         banner.append("  — mini_agent (/plan to plan, /exit to quit)", style=theme.SUBTLE)
-        console.print(Text("NTU · Schmidt Science · @shichuan", style=theme.SUBTLE))
+        console.print(Text("NTU · Schmidt Sciences · @shichuan", style=theme.SUBTLE))
         console.print(banner)
 
     model = getattr(agent.llm, "model", "?")
