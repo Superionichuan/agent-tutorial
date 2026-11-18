@@ -1,5 +1,8 @@
 # AgentForge Tutorial 2: Agentic Memory (hands-on)
 
+This folder is not covered by the repository's MIT license; it follows the workshop's
+lecture on agent memory and is shared for the workshop.
+
 Hands-on Workshop on AI Agents as Scientific Research Assistants
 Nanyang Technological University · Supported by Schmidt Sciences
 

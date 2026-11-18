@@ -14,6 +14,9 @@ your own API key (DeepSeek, Qwen, or Claude). The key stays in your Colab
 runtime and is sent only to the provider you select. Without a key, choose
 `offline`: every cell then runs from a recorded run of the notebook.
 
+Tutorial 2: Agentic memory, in [tutorial2/](tutorial2/):
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Superionichuan/agent-tutorial/blob/main/tutorial2/notebooks/agent_memory_colab.ipynb)
+
 ## Install on your computer
 
 One command installs `mini_agent` in your user account (no administrator rights, no Python
@@ -312,4 +315,6 @@ evaluation, safety, and offline mode.
 
 ## License
 
-MIT; see [LICENSE](LICENSE).
+MIT for the mini_agent package and Tutorial 1; see [LICENSE](LICENSE). The Tutorial 2
+material in [tutorial2/](tutorial2/) follows the workshop's lecture on agent memory and is
+shared for the workshop; it is not covered by the MIT license.
