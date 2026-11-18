@@ -36,7 +36,8 @@ class OllamaLLM(BaseLLM):
         except ValueError:
             return {"error": LLMError(f"Error: HTTP {resp.status_code}: {resp.text[:200]}")}
         if isinstance(data, dict) and data.get("error"):
-            return {"error": LLMError(f"Error: {data['error']}")}
+            status = f"HTTP {resp.status_code}: " if resp.status_code >= 400 else ""
+            return {"error": LLMError(f"Error: {status}{data['error']}")}
         return data
 
     def call(self, prompt: str) -> str:

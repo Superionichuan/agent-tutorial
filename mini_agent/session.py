@@ -33,6 +33,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from pathlib import Path
@@ -46,11 +47,15 @@ class SessionLog:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._seq = self._last_seq()
+        self._tail_checked = False
 
     # ---------- write ----------
 
     def append(self, type: str, **data: Any) -> dict:
         """Append one event and flush to disk. Returns the full event (with seq/time)."""
+        if not self._tail_checked:
+            self._repair_tail()
+            self._tail_checked = True
         self._seq += 1
         event = {
             "seq": self._seq,
@@ -62,18 +67,57 @@ class SessionLog:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
         return event
 
+    def _repair_tail(self) -> None:
+        """A process killed while writing an event leaves a last line without its newline.
+        Before the first event of this writer: drop that piece, or end it if it is a whole
+        event, so that every line of the file stays one event. (The writer holds the
+        session: one process per session.)"""
+        try:
+            with self.path.open("rb+") as f:
+                size = f.seek(0, os.SEEK_END)
+                if size == 0:
+                    return
+                f.seek(size - 1)
+                if f.read(1) == b"\n":
+                    return
+                start, pos = 0, size
+                while pos > 0:                       # the start of the last line
+                    step = min(65536, pos)
+                    pos -= step
+                    f.seek(pos)
+                    cut = f.read(step).rfind(b"\n")
+                    if cut != -1:
+                        start = pos + cut + 1
+                        break
+                f.seek(start)
+                tail = f.read()
+                try:
+                    json.loads(tail.decode("utf-8"))
+                    f.seek(0, os.SEEK_END)
+                    f.write(b"\n")
+                except ValueError:                   # UnicodeDecodeError is a ValueError too
+                    f.truncate(start)
+        except FileNotFoundError:
+            return
+
     # ---------- read ----------
 
     def events(self, until_seq: int | None = None) -> Iterator[dict]:
-        """Yield events in order; until_seq is inclusive, None = all."""
+        """Yield events in order; until_seq is inclusive, None = all. A last line cut short
+        by a crash during its write is not an event and is skipped."""
         if not self.path.exists():
             return
-        with self.path.open(encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
+        with self.path.open(encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                line = raw.strip()
                 if not line:
                     continue
-                event = json.loads(line)
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    if not raw.endswith("\n"):       # the unfinished last line
+                        return
+                    raise
                 if until_seq is not None and event["seq"] > until_seq:
                     return
                 yield event

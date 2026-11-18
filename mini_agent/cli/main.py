@@ -10,6 +10,7 @@ Options go before the task; everything after the first task word is the task.
 """
 import argparse
 import os
+import re
 import sys
 from typing import Optional
 
@@ -114,9 +115,9 @@ def keep_alive_count(args, argv) -> str:
     value = args.keep_alive
     if value is None or isinstance(value, int):
         return ""
-    if value.isdigit():
-        if int(value) < 1:
-            return "--keep-alive N must be 1 or more"
+    if value.isdigit() or (value[:1] == "-" and value[1:].isdigit()):   # a count, maybe a wrong one
+        if not re.fullmatch(r"[0-9]+", value) or int(value) < 1:
+            return "--keep-alive N must be a whole number, 1 or more"
         args.keep_alive = int(value)
         return ""
     if f"--keep-alive={value}" in argv:
@@ -202,6 +203,15 @@ def main(argv=None):
     if wrong:
         print(f"mini_agent: {wrong}", file=sys.stderr)
         return 2
+    if args.keepalive_session:
+        # only a run started by --keep-alive works in the session its supervisor holds
+        from ..session_lock import TOKEN_ENV, holder_token
+        from ..ui.common import EXIT_BUSY
+        token = os.environ.pop(TOKEN_ENV, "")
+        if not token or token != holder_token(args.keepalive_session):
+            print("mini_agent: --keepalive-session is for the runs of --keep-alive; this "
+                  f"process may not use that session: {args.keepalive_session}", file=sys.stderr)
+            return EXIT_BUSY
     if args.backend:
         os.environ["LLM_BACKEND"] = args.backend
     if args.model:
@@ -266,8 +276,9 @@ def main(argv=None):
     from ..core import Agent
     from ..core.agent.run import console_renderer
     from ..session import SessionLog
-    from ..ui.common import (SESS_DIR, exit_status, folder_of, hold_session, mark_message,
-                             new_session_path, stop_notice)
+    from ..ui.common import (SESS_DIR, exit_status, folder_of, hold_session, interrupted_line,
+                             interrupted_status, mark_message, new_session_path, stop_notice,
+                             stop_signals_raise)
     goal = " ".join(args.task)
     print(f"Query: {goal}")
     print("-" * 40)
@@ -297,11 +308,12 @@ def main(argv=None):
                 print(f"  {ended['notice']}")
                 return
         console_renderer(type, **data)
+    stop_signals_raise()            # SIGTERM/SIGHUP stop the running tool too, like Ctrl+C
     try:
         result = agent.run(goal, on_event=on_event)
-    except KeyboardInterrupt:
-        print("\nInterrupted. `mini_agent -c` continues this task.", file=sys.stderr)
-        return 130
+    except KeyboardInterrupt as e:
+        print("\n" + interrupted_line(e), file=sys.stderr)
+        return interrupted_status(e)
     print("-" * 40)
     if not ended.get("notice"):
         print(f"Answer: {result}")

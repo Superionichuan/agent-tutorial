@@ -23,6 +23,7 @@ from ..terminal import stdin_is_terminal
 from ..session import SessionLog
 from . import pets, theme
 from .common import (EXIT_BUSY, PLAN_GUIDANCE, SESS_DIR, compact_notice, exit_status, folder_of,
+                     interrupted_line, interrupted_status, stop_signals_raise,
                      hold_session, latest_session, mark_message, new_session_path,
                      note_approval_now, provider_label, resume_state, session_conversation,
                      shows_answer, stop_notice)
@@ -156,6 +157,9 @@ def run_repl(resume: bool = False, agent_options: dict | None = None,
     console = Console()
     terminal = stdin_is_terminal()
     once = once or (resume and not terminal)       # continue one task, then exit: no prompt
+    if once:
+        stop_signals_raise()       # SIGTERM/SIGHUP stop the running tool too, like Ctrl+C
+    stopped = {}           # the exit status of a run stopped by Ctrl+C or a signal
     live_now = []          # the Live display of the running turn, paused while asking
 
     def ask(action: str, args: dict) -> str:
@@ -280,10 +284,14 @@ def run_repl(resume: bool = False, agent_options: dict | None = None,
                 options = {"state": state} if state is not None else {}
                 answer = agent.run(goal, on_event=on_event, conversation=conversation, **options)
                 agent.log(f"Q: {goal} -> A: {str(answer)[:120]}")
-            except KeyboardInterrupt:
+            except KeyboardInterrupt as e:
                 ended["reason"] = "interrupted"
-                live.console.print(Text("Interrupted. Type the next message, or later run "
-                                        "`mini_agent -c` to continue this task.", style=theme.WARNING))
+                stopped["status"] = interrupted_status(e)
+                if once:
+                    live.console.print(Text(interrupted_line(e), style=theme.WARNING))
+                else:
+                    live.console.print(Text("Interrupted. Type the next message, or later run "
+                                            "`mini_agent -c` to continue this task.", style=theme.WARNING))
             except Exception as e:
                 ended["reason"] = "error"
                 live.console.print(Text(f"[internal error] {e}", style=theme.ERROR))
@@ -312,7 +320,7 @@ def run_repl(resume: bool = False, agent_options: dict | None = None,
                 mark_message(agent, log, unfinished.get("message_seq"))
             reason = run_turn(unfinished["goal"], conversation, state=state)
             if once:                          # like a one-shot task: no prompt, its status
-                return exit_status(reason)
+                return stopped.get("status") or exit_status(reason)
     if once:
         # nothing unfinished: the command line said so (2); a --keep-alive run has nothing left (0)
         return 0 if session is not None else 2

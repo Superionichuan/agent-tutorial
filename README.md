@@ -158,6 +158,11 @@ again later"); a continue that completes a step starts the count again.
 `mini_agent -c --keep-alive` in a folder with nothing unfinished prints one line and exits
 0, so it is harmless to run at every login.
 
+Ctrl+C, a service stop (SIGTERM) or closing the terminal also stops the tool the agent is
+running. A process killed outright (`kill -9`, out of memory, `taskkill /F`) cannot do that:
+a command its tool had started may still finish. When the task continues, that call is not
+run again; the model is told it was cut off.
+
 `-c` does not remember the options of the earlier run: repeat `--yes`, `--budget` and the
 rest. Without a terminal nobody can approve a risky call, so without `--yes` the first one
 stops the task with exit status 3; add `--yes` (or `--approve deny`) if the task may run

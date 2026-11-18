@@ -4,7 +4,7 @@ from typing import Optional
 import httpx
 from .. import retry
 from ..base import BaseLLM, LLMError, LLMResponse, redact
-from .claude_stream import stream_claude
+from .claude_stream import error_text, stream_claude
 
 # per-model max_output_tokens (measured)
 MODEL_MAX_OUTPUT = {
@@ -79,9 +79,9 @@ class ClaudeLLM(BaseLLM):
             },
             timeout=self.timeout
         ), self.retry_waits, self._sleep)
+        if resp.status_code >= 400:     # "HTTP <status>: <message>", as in the streamed call
+            return {"error": {"message": error_text(resp.status_code, resp.text).removeprefix("Error: ")}}
         data = resp.json()
-        if resp.status_code >= 400 and not (isinstance(data, dict) and "error" in data):
-            return {"error": {"message": f"HTTP {resp.status_code}: {str(data)[:200]}"}}
         return data if isinstance(data, dict) else {"unexpected": data}
 
     def _failed(self, text: str) -> LLMError:

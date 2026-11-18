@@ -34,7 +34,7 @@ from typing import List, Optional, Tuple
 
 from ..llm.retry import retryable
 from ..session import SessionLog
-from ..session_lock import SessionBusy, SessionLock
+from ..session_lock import TOKEN_ENV, SessionBusy, SessionLock
 from ..ui.common import EXIT_BUSY, SESS_DIR, latest_session, new_session_path
 
 DEFAULT_TRIES = 5
@@ -42,7 +42,15 @@ WAITS = (30.0, 60.0, 120.0, 240.0, 480.0, 600.0)
 EXIT_GAVE_UP = 75
 WINDOWS_CTRL_C = 0xC000013A          # STATUS_CONTROL_C_EXIT: a console Ctrl+C ended the process
 ASKED_TO_STOP = tuple(getattr(signal, n) for n in ("SIGINT", "SIGTERM", "SIGHUP") if hasattr(signal, n))
+STOPPED_STATUS = {128 + s: s for s in ASKED_TO_STOP}    # a run that stopped itself on the signal
 SETTING_ERRORS = ("Error: no server address", "Error: no model")
+# Each run imports the package this supervisor runs from, never a mini_agent.py or mini_agent/
+# in the task's folder (python -m would put that folder first on sys.path).
+PACKAGE_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+LAUNCH = ("import os, sys; sys.path[:1] = [p for p in sys.path[:1] if p]; root = {root!r}; "
+          "same = lambda p: os.path.normcase(os.path.realpath(p)); "
+          "any(same(p) == same(root) for p in sys.path) or sys.path.insert(0, root); "
+          "from mini_agent.cli.main import main; sys.exit(main())")
 
 
 class Stopped(BaseException):
@@ -53,7 +61,17 @@ class Stopped(BaseException):
         self.signum = signum
 
 
+_spawning = False         # a run's process is being started: hold a stop until it is known
+_held: List[int] = []
+
+
 def _stopped(signum, frame):
+    """The supervisor's handler for Ctrl+C, SIGTERM and SIGHUP."""
+    if _spawning:
+        _held.append(signum)
+        return
+    if signum == signal.SIGINT:
+        raise KeyboardInterrupt
     raise Stopped(signum)
 
 
@@ -107,8 +125,8 @@ def outcome(rc: int, ended: Optional[dict]) -> Tuple[str, int, str]:
     reason = (ended or {}).get("reason")
     if reason == "done":
         return "done", 0, "done"
-    if rc in (130, WINDOWS_CTRL_C) or (rc < 0 and -rc in ASKED_TO_STOP):
-        sig = -rc if rc < 0 else signal.SIGINT
+    if rc == WINDOWS_CTRL_C or rc in STOPPED_STATUS or (rc < 0 and -rc in ASKED_TO_STOP):
+        sig = -rc if rc < 0 else STOPPED_STATUS.get(rc, signal.SIGINT)
         return "stop", 128 + sig, f"the task was stopped ({signal_name(sig)})"
     if rc == 2:
         return "stop", 2, "the run could not start (a usage or set-up error)"
@@ -160,7 +178,7 @@ def spent(events) -> int:
 def child_argv(args, session: Path, budget_left: int, first: bool) -> List[str]:
     """The command of one run: the same options, this session, the budget left; the task the
     first time, -c afterwards."""
-    argv = [sys.executable, "-m", "mini_agent"]
+    argv = [sys.executable, "-c", LAUNCH.format(root=PACKAGE_ROOT)]
     if args.yes or args.approve == "auto":
         argv.append("--yes")
     elif args.approve != "ask":
@@ -207,20 +225,35 @@ def _end(proc: subprocess.Popen, signum: int) -> None:
 
 
 def _run(argv: List[str], lock: SessionLock) -> int:
-    """Run one child and return its exit status (negative: the signal that ended it)."""
+    """Run one child and return its exit status (negative: the signal that ended it). A stop
+    that comes while the child is being started is held until its process is known, then the
+    child is stopped too."""
+    global _spawning
     keep = {"pass_fds": (lock.fd,)} if os.name != "nt" and lock.fd is not None else {}
-    proc = subprocess.Popen(argv, **keep)
+    env = dict(os.environ, **{TOKEN_ENV: lock.token})    # its way into the session we hold
+    proc = None
     try:
+        _spawning = True
+        try:
+            proc = subprocess.Popen(argv, env=env, **keep)
+        finally:
+            _spawning = False
+        if _held:
+            signum = _held[0]
+            _held.clear()
+            raise KeyboardInterrupt() if signum == signal.SIGINT else Stopped(signum)
         while True:
             try:
                 return proc.wait(timeout=1)       # short waits: Ctrl+C is seen on Windows too
             except subprocess.TimeoutExpired:
                 continue
     except KeyboardInterrupt:
-        _end(proc, signal.SIGINT)
+        if proc is not None:
+            _end(proc, signal.SIGINT)
         raise
     except Stopped as e:
-        _end(proc, e.signum)
+        if proc is not None:
+            _end(proc, e.signum)
         raise
 
 
@@ -246,25 +279,37 @@ def supervise(args, budget: int) -> int:
     except SessionBusy as e:
         print(e, file=sys.stderr)
         return EXIT_BUSY
-    for name in ("SIGTERM", "SIGHUP"):
-        if hasattr(signal, name):
-            signal.signal(getattr(signal, name), _stopped)
 
     def stop_by(e) -> int:
+        for s in ASKED_TO_STOP:          # one stop is enough: a second one must not cut this short
+            try:
+                signal.signal(s, signal.SIG_IGN)
+            except (OSError, ValueError):
+                pass
         sig = signal.SIGINT if isinstance(e, KeyboardInterrupt) else e.signum
         SessionLog(session).append("keepalive/stop", why=f"stopped by {signal_name(sig)}",
                                    exit_status=128 + sig)
         say(f"stopped ({signal_name(sig)}). `mini_agent -c` continues the task later.")
         return 128 + sig
 
+    for s in ASKED_TO_STOP:
+        try:
+            signal.signal(s, _stopped)
+        except (OSError, ValueError):
+            pass
+    try:
+        return _keep_going(args, session, lock, budget, tries, table)
+    except (KeyboardInterrupt, Stopped) as e:     # wherever it comes: a run, a wait, between
+        return stop_by(e)
+
+
+def _keep_going(args, session: Path, lock: SessionLock, budget: int, tries: int,
+                table: List[float]) -> int:
     used = misses = runs = 0
     while True:
         first = bool(args.task) and not _has_task(session)
         before = _last_seq(session)
-        try:
-            rc = _run(child_argv(args, session, budget - used, first), lock)
-        except (KeyboardInterrupt, Stopped) as e:
-            return stop_by(e)
+        rc = _run(child_argv(args, session, budget - used, first), lock)
         runs += 1
         events = _events(session, after=before)
         used += spent(events)
@@ -295,7 +340,4 @@ def supervise(args, budget: int) -> int:
         SessionLog(session).append("keepalive/continue", attempt=misses + 1, of=tries, why=why,
                                    wait_s=wait, budget_left=left, exit_status=rc)
         say(f"{why}; continuing in {span(wait)} (try {misses + 1} of {tries}). Ctrl+C stops it.")
-        try:
-            time.sleep(wait)
-        except (KeyboardInterrupt, Stopped) as e:
-            return stop_by(e)
+        time.sleep(wait)

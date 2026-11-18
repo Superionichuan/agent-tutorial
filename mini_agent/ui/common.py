@@ -67,6 +67,44 @@ def exit_status(reason) -> int:
     return {"done": 0, "needs_approval": 3, "interrupted": 130}.get(reason, 1)
 
 
+class StopSignal(KeyboardInterrupt):
+    """SIGTERM or SIGHUP in a process that runs a task, raised like Ctrl+C: the running
+    tool's process is stopped, the turn ends as interrupted, the exit status is 128 + signum."""
+
+    def __init__(self, signum: int):
+        super().__init__(signum)
+        self.signum = signum
+
+
+def stop_signals_raise() -> None:
+    """In a process that runs a task: SIGTERM and SIGHUP (a service stop, a closed terminal,
+    --keep-alive stopping its run) raise StopSignal instead of ending the process at once,
+    so that the tool it is running stops with it (POSIX; main thread only)."""
+    import signal
+
+    def handler(signum, frame):
+        raise StopSignal(signum)
+
+    for name in ("SIGTERM", "SIGHUP"):
+        if hasattr(signal, name) and os.name != "nt":
+            try:
+                signal.signal(getattr(signal, name), handler)
+            except (OSError, ValueError):     # not the main thread
+                pass
+
+
+def interrupted_status(e: BaseException) -> int:
+    """The exit status after an interruption: 130 for Ctrl+C, 128 + the signal for StopSignal."""
+    return 128 + e.signum if isinstance(e, StopSignal) else 130
+
+
+def interrupted_line(e: BaseException) -> str:
+    if isinstance(e, StopSignal):
+        import signal
+        return f"Stopped ({signal.Signals(e.signum).name}). `mini_agent -c` continues this task."
+    return "Interrupted. `mini_agent -c` continues this task."
+
+
 EXIT_BUSY = 4     # the session is in use by another mini_agent process
 
 
