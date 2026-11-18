@@ -201,8 +201,9 @@ def run_agent(
             # 5. Invalid reply: nothing runs; the parse error is the observation
             if action is None:
                 invalid += 1
-                if invalid == 2:
-                    answer = f"Stopped after 2 invalid replies. Last reply: {thought[:200]}"
+                limit = 3 if args.get("json_syntax") else 2   # broken JSON gets one more try
+                if invalid >= limit:
+                    answer = f"Stopped after {invalid} invalid replies. Last reply: {thought[:200]}"
                     emit("turn/end", answer=answer, reason="invalid_reply")
                     return answer
                 result = f"Error: {args['error']}. Reply with exactly one JSON object."
