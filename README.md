@@ -100,6 +100,12 @@ folder, the calculator, notes) run without asking.
   never runs them.
 - With no terminal to ask (a script, a scheduled job), the first risky call stops the task
   with exit status 3; `mini_agent -c --yes` continues it with risky calls allowed.
+- Tool commands run without a terminal, so a command that asks for a password or a
+  confirmation (sudo, ssh, git) fails at once instead of waiting; use keys, an SSH agent or
+  a credential helper.
+- To leave a process running after the tool returns, redirect its output, e.g.
+  `server > server.log 2>&1 &`. Otherwise the tool waits until its 120 s limit and then
+  ends the process.
 - The file tools only reach paths inside the workspace; `--no-confine` lifts that limit.
   The limit is a convenience, not isolation: shell commands and Python are not confined.
   For real isolation, run mini_agent inside a virtual machine or container of your choice.
