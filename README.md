@@ -213,6 +213,19 @@ ExecStart=/home/YOU/.local/bin/mini_agent -c --keep-alive
 WantedBy=default.target
 ```
 
+Windows (tested on Windows 11): save as `mini_agent-continue.cmd` in your Startup folder
+(press Win+R and type `shell:startup`), with your paths. Windows runs it at every login, in
+a console window that stays open while the task runs; the output goes to
+`mini_agent-continue.log` in the project folder, in UTF-8. To stop the task, press Ctrl+C
+in that window or close it; in Task Manager use "End process tree", not "End task" on one
+process. To stop running it at login, delete the file.
+
+```bat
+@echo off
+cd /d "C:\Users\YOU\my-project"
+"C:\Users\YOU\.local\bin\mini_agent.exe" -c --keep-alive >> mini_agent-continue.log 2>&1
+```
+
 
 ### Your own tool
 
