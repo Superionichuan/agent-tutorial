@@ -307,8 +307,7 @@ def run_repl(resume: bool = False, agent_options: dict | None = None,
 
             try:
                 options = {"state": state} if state is not None else {}
-                answer = agent.run(goal, on_event=on_event, conversation=conversation, **options)
-                agent.log(f"Q: {goal} -> A: {str(answer)[:120]}")
+                agent.run(goal, on_event=on_event, conversation=conversation, **options)
             except KeyboardInterrupt as e:
                 ended["reason"] = "interrupted"
                 stopped["status"] = interrupted_status(e)

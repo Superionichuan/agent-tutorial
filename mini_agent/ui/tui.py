@@ -554,10 +554,7 @@ class MiniAgentApp(App):
             self.session_log.append(type, **d)               # persist
             self.call_from_thread(self._on_event, type, d)   # render on UI thread
         try:
-            answer = self.agent.run(goal, on_event=on_event,
-                                    conversation=conversation, **options)
-            # durable memory: auto-log each turn to today's log (the agent can also use remember)
-            self.agent.log(f"Q: {goal} -> A: {str(answer)[:120]}")
+            self.agent.run(goal, on_event=on_event, conversation=conversation, **options)
         except Exception as e:
             self.call_from_thread(self._on_event, "turn/end",
                                   {"answer": f"[internal error] {e}", "reason": "error"})
