@@ -67,8 +67,9 @@ change one line in it to try your own variant.
 
 COLAB_NOTE = md(r"""
 > **Running in Google Colab.** Run the setup cell below first. With `offline`, every cell runs
-> from a recorded run, without a key. A key stays in this runtime's memory and is sent only to
-> the provider you choose. Run the parts in order: later parts use what earlier ones define.
+> from a recorded run, without a key. A key is sent only to the provider you choose; it is also
+> saved in a `.env` file on this Colab machine, so that `python -m mini_agent` in a terminal can
+> use it. Run the parts in order: later parts use what earlier ones define.
 """)
 
 SETUP = r'''
@@ -79,8 +80,9 @@ SETUP = r'''
 # PROVIDER = "offline" needs no API key: every model call is answered from a
 # recorded run of this notebook, while the tools run for real. The other
 # providers need your own key, read from Colab Secrets (left sidebar, key icon)
-# if it is stored there, and otherwise asked for below. The key stays in this
-# runtime's memory and is sent only to the provider you select.
+# if it is stored there, and otherwise asked for below. The key is sent only to
+# the provider you select. It is also saved in a .env file on this machine, so
+# that `python -m mini_agent` in a terminal finds it (step 5 below).
 
 PROVIDER = "__DEFAULT_PROVIDER__"  # @param __PROVIDERS__
 
@@ -107,17 +109,26 @@ if _installed != VERSION:            # rerunning this cell to switch provider sk
                     "--force-reinstall", "--no-deps", WHEEL], check=True)
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "httpx", "rich"],
                    check=True)
+import importlib.util
+if importlib.util.find_spec("textual") is None:   # interactive mode in a terminal needs it
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "textual"], check=True)
 
 import mini_agent
 
-_template = Path(mini_agent.__file__).parent / "prompts" / "agent.md"
-if not _template.exists():           # repair an incomplete download
+_pkg = Path(mini_agent.__file__).parent
+_base = f"https://raw.githubusercontent.com/Superionichuan/agent-tutorial/{COMMIT}/mini_agent/"
+_files = ["prompts/agent.md", "prompts/coding.md", "llm/recordings/tutorial.jsonl"]
+_missing = [f for f in _files if not (_pkg / f).exists()]
+if _missing:                         # repair an incomplete download
     import urllib.request
-    _template.parent.mkdir(parents=True, exist_ok=True)
-    urllib.request.urlretrieve("https://raw.githubusercontent.com/Superionichuan/"
-                               f"agent-tutorial/{COMMIT}/mini_agent/prompts/agent.md",
-                               _template)
-    print("Repaired the prompt template.")
+    for _f in _missing:
+        (_pkg / _f).parent.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(_base + _f, _pkg / _f)
+    print(f"Repaired {len(_missing)} data file(s).")
+
+# A new Python process (a terminal) sends DeepSeek-backend calls to OpenRouter
+# only while this file exists; it is written for a workshop key.
+_PTH = _pkg.parent / "mini_agent_base_url.pth"
 
 from mini_agent.llm.base import BaseLLM
 
@@ -228,7 +239,11 @@ def show_prompt(prompt, only=None):
 
 # ---- 4. connect to the model ----
 def _connect():
+    global _env
     if PROVIDER == "offline":
+        _PTH.unlink(missing_ok=True)
+        os.environ["LLM_BACKEND"] = "offline"
+        _env = "LLM_BACKEND=offline\n"
         lines = gzip.decompress(base64.b64decode(RECORDING)).decode().splitlines()
         recording = [json.loads(line) for line in lines if line.strip()]
         model = Model(recording=recording)
@@ -265,14 +280,32 @@ def _connect():
         print("Key received.")
 
     workshop = key.startswith("sk-or-")
+    from mini_agent.llm.backends import DeepSeekLLM
     if workshop:
         # A workshop key (OpenRouter) pasted here works with any PROVIDER choice.
         # OpenRouter speaks the same protocol as DeepSeek's API, so the DeepSeek
         # backend is reused with OpenRouter's address and the same model.
-        from mini_agent.llm.backends import DeepSeekLLM
+        OPENROUTER_URL = "https://openrouter.ai/api/v1"
+        DeepSeekLLM.BASE_URL = OPENROUTER_URL
+        os.environ.update(LLM_BACKEND="deepseek", DEEPSEEK_API_KEY=key,
+                          DEEPSEEK_MODEL="deepseek/deepseek-v4-flash",
+                          MINI_AGENT_DEEPSEEK_URL=OPENROUTER_URL)
+        _PTH.write_text(
+            'import os; setattr(__import__("mini_agent.llm.backends.deepseek", '
+            'fromlist=["DeepSeekLLM"]).DeepSeekLLM, "BASE_URL", '
+            'os.environ.get("MINI_AGENT_DEEPSEEK_URL", "https://openrouter.ai/api/v1"))\n')
+        _env = ("LLM_BACKEND=deepseek\nDEEPSEEK_MODEL=deepseek/deepseek-v4-flash\n"
+                f"DEEPSEEK_API_KEY={key}\n")
         live = DeepSeekLLM(api_key=key, model="deepseek/deepseek-v4-flash")
-        live.BASE_URL = "https://openrouter.ai/api/v1"
     else:
+        _PTH.unlink(missing_ok=True)                      # undo an earlier workshop key
+        os.environ.pop("MINI_AGENT_DEEPSEEK_URL", None)
+        os.environ.pop("DEEPSEEK_MODEL", None)
+        if PROVIDER == "deepseek":
+            DeepSeekLLM.BASE_URL = "https://api.deepseek.com/v1"
+        os.environ["LLM_BACKEND"] = PROVIDER
+        os.environ[secret] = key
+        _env = f"LLM_BACKEND={PROVIDER}\n{secret}={key}\n"
         from mini_agent.llm import create_llm
         config = {"LLM_BACKEND": PROVIDER, secret: key}
         config.update({k: v for k, v in os.environ.items() if k.endswith("_MODEL")})
@@ -296,6 +329,15 @@ def _connect():
 RECORDING = "__RECORDING__"
 
 llm = _connect()
+
+# ---- 5. make the configuration visible to the command line ----
+# A terminal starts a new process that does not see this notebook's settings, so
+# they are also written to a .env file where `python -m mini_agent` looks for it:
+# the current folder, or else next to the package.
+for _d in {Path("/content"), Path.cwd(), _pkg.parent}:
+    if _d.is_dir():
+        (_d / ".env").write_text(_env)
+
 print("Setup complete. Continue with the next cell.")
 '''
 
@@ -310,9 +352,16 @@ OPENROUTER = r'''
 # @title 🔑 Workshop key (OpenRouter): run this cell and paste your key  { display-mode: "form" }
 # Run the setup cell above first (offline is fine). Then run this cell and paste
 # your workshop key when asked; press Enter without a key to skip. Every later
-# model call then goes to deepseek/deepseek-v4-flash through OpenRouter. The key
-# stays in this runtime's memory and is sent only to OpenRouter. To undo:
-# Runtime > Restart session, then run the setup cell again.
+# model call, including `python -m mini_agent` in a terminal, then goes to
+# deepseek/deepseek-v4-flash through OpenRouter. The key is sent only to
+# OpenRouter; it is also saved in a .env file on this machine for the terminal.
+# To undo: Runtime > Restart session, then run the setup cell again.
+import os
+import pathlib
+
+if "Model" not in globals():
+    raise SystemExit("Run the setup cell above first (offline is fine).")
+import mini_agent
 from mini_agent.llm.backends import DeepSeekLLM
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
@@ -320,17 +369,19 @@ OPENROUTER_MODEL = "deepseek/deepseek-v4-flash"
 
 
 def _workshop_key():
-    if getattr(llm, "workshop_key", False):  # pasted into the setup cell already
-        print("Using the workshop key entered earlier.")
-        return None
     key = ""
-    try:                                     # Colab Secrets, if stored there
-        from google.colab import userdata
-        key = userdata.get("OPENROUTER_API_KEY") or ""
+    if os.environ.get("MINI_AGENT_DEEPSEEK_URL") == OPENROUTER_URL:    # entered earlier
+        key = os.environ.get("DEEPSEEK_API_KEY", "")
         if key:
-            print("Key loaded from Colab Secrets (OPENROUTER_API_KEY).")
-    except Exception:
-        pass
+            print("Using the workshop key entered earlier.")
+    if not key:
+        try:                                     # Colab Secrets, if stored there
+            from google.colab import userdata
+            key = userdata.get("OPENROUTER_API_KEY") or ""
+            if key:
+                print("Key loaded from Colab Secrets (OPENROUTER_API_KEY).")
+        except Exception:
+            pass
     if not key:
         import getpass
         print("Paste your workshop key below and press Enter (typing is hidden).")
@@ -339,18 +390,37 @@ def _workshop_key():
     if not key:
         print("No key entered: nothing changed. Run this cell again to use a workshop key.")
         return None
-    live = DeepSeekLLM(api_key=key, model=OPENROUTER_MODEL)
-    live.BASE_URL = OPENROUTER_URL
+    # OpenRouter speaks the same OpenAI-compatible protocol as DeepSeek's own
+    # API, so the DeepSeek backend is reused; only the address and the model change.
+    test = DeepSeekLLM(api_key=key, model=OPENROUTER_MODEL)
+    test.BASE_URL = OPENROUTER_URL                  # this test call only
     try:
-        reply = live("Reply with the single word: ready").strip()
+        reply = test("Reply with the single word: ready").strip()
     except Exception as e:
         reply = f"Error: {type(e).__name__}: {e}"
     if reply.startswith("Error"):
         print(f"Connection failed: {reply.removeprefix('Error: ')[:200]}")
         print("Check the key, or continue offline (rerun the setup cell with offline).")
         return None
+    DeepSeekLLM.BASE_URL = OPENROUTER_URL           # every model call from now on
+    os.environ.update(LLM_BACKEND="deepseek", DEEPSEEK_API_KEY=key,
+                      DEEPSEEK_MODEL=OPENROUTER_MODEL,
+                      MINI_AGENT_DEEPSEEK_URL=OPENROUTER_URL)
+    # a new Python process (a terminal) uses the same address and reads the key
+    # and the model from .env
+    _site = pathlib.Path(mini_agent.__file__).parent.parent
+    (_site / "mini_agent_base_url.pth").write_text(
+        'import os; setattr(__import__("mini_agent.llm.backends.deepseek", '
+        'fromlist=["DeepSeekLLM"]).DeepSeekLLM, "BASE_URL", '
+        'os.environ.get("MINI_AGENT_DEEPSEEK_URL", "https://openrouter.ai/api/v1"))\n')
+    for _d in {pathlib.Path("/content"), pathlib.Path.cwd(), _site}:
+        if _d.is_dir():
+            (_d / ".env").write_text(f"LLM_BACKEND=deepseek\nDEEPSEEK_MODEL={OPENROUTER_MODEL}\n"
+                                     f"DEEPSEEK_API_KEY={key}\n")
+    live = DeepSeekLLM(api_key=key, model=OPENROUTER_MODEL)
     print(f"Connected: {OPENROUTER_MODEL} via OpenRouter")
     print(f"Test call returned: {reply[:40]}")
+    print("The same key and model now work in a terminal too: python -m mini_agent")
     model = Model(live=live, record_to=os.environ.get("T2_RECORD"))
     model.workshop_key = True
     return model
@@ -373,6 +443,7 @@ TROUBLE = md(r"""
 | `HTTP 429`, or a timeout | the provider limits the request rate | wait a minute and rerun the cell, or choose `offline` |
 | `[offline] This prompt is not in the recording` | offline mode replays this notebook's own prompts only; your change made a new one | use a live provider for your own variants |
 | the setup cell asks for a restart | another version of `mini_agent` is loaded | Runtime > Restart session, then run the setup cell again |
+| `python -m mini_agent` in a terminal fails (`ModuleNotFoundError`, or `Connection refused`) | the setup cell has not run in this runtime yet | run the setup cell (and the 🔑 cell for a workshop key), then run the command again |
 | a different answer, or a different number of steps, than on the speaker's screen | model output varies between runs | expected with a live provider; offline mode gives the same outputs every time |
 
 </details>
