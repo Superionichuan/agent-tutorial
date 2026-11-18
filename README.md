@@ -104,8 +104,11 @@ folder, the calculator, notes) run without asking.
   confirmation (sudo, ssh, git) fails at once instead of waiting; use keys, an SSH agent or
   a credential helper.
 - To leave a process running after the tool returns, redirect its output, e.g.
-  `server > server.log 2>&1 &`. Otherwise the tool waits until its 120 s limit and then
-  ends the process.
+  `server > server.log 2>&1 &`. Otherwise the tool waits until its 120 s limit. On macOS
+  and Linux it then ends the process (unless the process started a session of its own, as
+  `setsid` and most daemons do); on Windows a process started in the background keeps
+  running, so end it yourself (in Task Manager, or with `taskkill /F /IM name.exe`, which
+  ends every process with that name).
 - The file tools only reach paths inside the workspace; `--no-confine` lifts that limit.
   The limit is a convenience, not isolation: shell commands and Python are not confined.
   For real isolation, run mini_agent inside a virtual machine or container of your choice.
