@@ -181,6 +181,7 @@ until the rule was added (see Part 2).
 | the 🔑 workshop-key cell waits for input | it asks for the workshop key | paste the key and press Enter; without a key, just press Enter |
 | a different answer from the table | a live provider | expected; offline gives the table exactly |
 | no network in the room | — | use `offline`; it needs no network after the setup cell has installed the package |
+| `python -m mini_agent` in a Colab terminal fails (`ModuleNotFoundError`, or `Connection refused`) | the setup cell has not run in this runtime yet | run the setup cell (and the 🔑 cell for a workshop key), then run the command again |
 
 ## 7. Questions you may get
 
@@ -194,6 +195,12 @@ until the rule was added (see Part 2).
   the operation.
 - **Can the agent edit its own notes?** Yes: `remember` writes the file. That is why the
   write step needs checks in code (Part 2, `audit`).
+- **Can I use the agent from a terminal, as in Tutorial 1?** Yes. After the setup cell (and
+  the 🔑 cell, for a workshop key), open a terminal in Colab and run
+  `python -m mini_agent "your task"`, or `python -m mini_agent` for a conversation. The
+  setup saves the key and the model in a `.env` file on that Colab machine, which is how the
+  new process finds them. The terminal runs the plain agent of Tutorial 1, without this
+  notebook's notes.
 - **Why can't I choose another model, as in Tutorial 1?** Part 2 depends on how this model
   behaves over the workshop key: it trusted the wrong note in all 14 test runs without the
   rule, and checked its source in all 13 with it. Another model might check on its own or
