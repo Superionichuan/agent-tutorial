@@ -158,7 +158,7 @@ def test_nothing_to_slim_above_80_percent_is_no_compaction(tmp_path):
 def test_the_summary_guard_counts_tokens_with_the_framing():
     old = [step("a" * 450)]
     source = C.cut(f"read({{}}) → {'a' * 450}", C.SUMMARY_LINE)
-    assert C.summarize(lambda prompt: "界" * 400, old) is None     # fewer characters, more tokens
+    assert C.summarize(lambda prompt: "€" * 400, old) is None     # fewer characters, more tokens
     short = C.summarize(lambda prompt: "a read of 450 a", old)
     assert short and C.count_tokens(C.render(C.compacted(short, 1))) < C.count_tokens(source)
 

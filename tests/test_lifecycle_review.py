@@ -24,7 +24,7 @@ from mini_agent.session import SessionLog  # noqa: E402
 
 
 def test_user_message_with_entry_header_is_shown_verbatim(tmp_path):
-    message = 'Keep this quotation:\n## 7 · 2026-11-17 12:00:00\n猫 stays here.'
+    message = 'Keep this quotation:\n## 7 · 2026-11-17 12:00:00\nΩμέγα stays here.'
     lifecycle = Lifecycle(tmp_path)
     prompts = []
 
