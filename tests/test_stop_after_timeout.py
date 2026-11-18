@@ -23,7 +23,8 @@ from test_keepalive import Flaky, env_of, start, wait_for
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX process groups and signals")
 
-STOPS = [signal.SIGTERM, signal.SIGINT, signal.SIGHUP]
+STOPS = [getattr(signal, name) for name in ("SIGTERM", "SIGINT", "SIGHUP")
+         if hasattr(signal, name)]          # Windows has no SIGHUP; the module is skipped there
 
 
 def call(action: str, **args) -> str:
