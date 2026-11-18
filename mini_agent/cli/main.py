@@ -17,6 +17,7 @@ from .. import __version__
 from ..core.policy import POLICIES
 
 DEFAULT_BUDGET = 1_000_000      # tokens per task on the command line (with the lifecycle)
+KEEP_ALIVE_TRIES = 5            # --keep-alive: continues in a row without progress
 
 SETUP_HELP = """\
 First time: `mini_agent setup` asks for a provider and a key and saves them in
@@ -43,7 +44,15 @@ agent finished (its answer says whether it managed); 1 stopped before the end (t
 budget, step limit, a model error, a task offline mode has no recording of, ...);
 3 a risky call needs approval and there was no terminal to ask (`mini_agent -c --yes`
 continues); 2 a usage or set-up error, or nothing for -c to continue in this folder;
-130 interrupted. After 1, 3 or 130, `mini_agent -c` in the same folder continues the task.
+4 the session is in use by another mini_agent process; 130 interrupted. After 1, 3 or
+130, `mini_agent -c` in the same folder continues the task.
+
+--keep-alive [N] keeps a task going after a passing failure: the provider down or
+unreachable (no HTTP status, 408, 429, 5xx), or the process killed. It waits (30 s, 1, 2,
+4, 8 min, then 10 min) and continues with -c; all runs share the task's token budget. A
+stop that waiting will not change ends it at once, with that stop's status. After N
+continues in a row (default 5) that complete no step it gives up: exit 75 ("try again
+later"). `mini_agent -c --keep-alive` with nothing unfinished here exits 0.
 """
 
 NO_MODEL = """\
@@ -84,12 +93,37 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-lifecycle", dest="lifecycle", action="store_false",
                    help="no written memory, compaction or handoff (in <workspace>/.mini_agent): "
                         "the plain loop, which stops when the context window is full")
+    p.add_argument("--keep-alive", dest="keep_alive", nargs="?", const=KEEP_ALIVE_TRIES,
+                   metavar="N",
+                   help="keep the task going: after a passing failure (the provider down, the "
+                        "process killed) continue it with -c, up to N times in a row without "
+                        f"progress (default {KEEP_ALIVE_TRIES}); with a task, or with -c")
+    p.add_argument("--keepalive-session", help=argparse.SUPPRESS)   # a run of --keep-alive
     p.add_argument("--backend", metavar="NAME",
                    help="LLM backend or provider, e.g. openrouter, deepseek, claude, offline "
                         "(sets LLM_BACKEND)")
     p.add_argument("--model", metavar="NAME", help="model name (sets LLM_MODEL)")
     p.add_argument("--version", action="version", version=f"mini_agent {__version__}")
     return p
+
+
+def keep_alive_count(args, argv) -> str:
+    """--keep-alive takes an optional count: `--keep-alive 3 "task"`, `--keep-alive=3`. A task
+    word right after it (`--keep-alive "task"`) is the task, not a count: put it back.
+    Returns "" or what is wrong."""
+    value = args.keep_alive
+    if value is None or isinstance(value, int):
+        return ""
+    if value.isdigit():
+        if int(value) < 1:
+            return "--keep-alive N must be 1 or more"
+        args.keep_alive = int(value)
+        return ""
+    if f"--keep-alive={value}" in argv:
+        return f"--keep-alive N must be a whole number, not {value!r}"
+    args.task = [value, *args.task]
+    args.keep_alive = KEEP_ALIVE_TRIES
+    return ""
 
 
 def setup_problem() -> str:
@@ -158,6 +192,16 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.task and args.task[0] == "--":
         args.task = args.task[1:]
+    wrong = keep_alive_count(args, argv)
+    if not wrong and args.keep_alive is not None:
+        if args.tui:
+            wrong = "--keep-alive keeps a task going in the terminal; it does not work with --tui"
+        elif not args.task and not args.resume:
+            wrong = ('--keep-alive needs a task (mini_agent --keep-alive "task") or -c '
+                     "(mini_agent -c --keep-alive)")
+    if wrong:
+        print(f"mini_agent: {wrong}", file=sys.stderr)
+        return 2
     if args.backend:
         os.environ["LLM_BACKEND"] = args.backend
     if args.model:
@@ -171,6 +215,14 @@ def main(argv=None):
     except ValueError as e:                      # a budget that is not a positive number
         print(f"mini_agent: {e}", file=sys.stderr)
         return 2
+    if args.resume and args.task:
+        print("mini_agent: -c continues the latest session; use it without a task "
+              "(mini_agent -c), then type the next message", file=sys.stderr)
+        return 2
+    if args.keep_alive is not None:
+        # this process supervises; the task runs in child processes (cli/keepalive.py)
+        from .keepalive import supervise
+        return supervise(args, options.get("max_tokens") or DEFAULT_BUDGET)
 
     if not args.task:
         # Settings that cannot work (an unknown LLM_BACKEND, a key meant for another
@@ -181,6 +233,11 @@ def main(argv=None):
         except (RuntimeError, ValueError) as e:
             print(f"mini_agent: {e}", file=sys.stderr)
             return 2
+        if args.resume and args.keepalive_session:
+            # a run of --keep-alive: continue its pinned session once (its supervisor holds the lock)
+            from ..ui.repl import run_repl
+            return run_repl(resume=True, agent_options=options, session=args.keepalive_session,
+                            once=True)
         if args.resume:
             # -c works only on the current folder: it never runs another folder's task here
             from ..terminal import stdin_is_terminal
@@ -192,25 +249,25 @@ def main(argv=None):
                 return 2
         if args.tui:
             # full textual UI (--tui)
+            from ..ui.common import EXIT_BUSY
             from ..ui.tui import MiniAgentApp
-            MiniAgentApp(resume=args.resume, agent_options=options).run(inline=True, inline_no_clear=True)
+            app = MiniAgentApp(resume=args.resume, agent_options=options)
+            app.run(inline=True, inline_no_clear=True)
+            if app.busy:                         # another process runs this session
+                print(app.busy, file=sys.stderr)
+                return EXIT_BUSY
             return 0
         # default: plain CLI mode (no screen takeover; output goes to scrollback)
         from ..ui.repl import run_repl
         return run_repl(resume=args.resume, agent_options=options)
-
-    if args.resume:
-        print("mini_agent: -c continues the latest session; use it without a task "
-              "(mini_agent -c), then type the next message", file=sys.stderr)
-        return 2
 
     # one-shot mode: logged like an interactive session, so `mini_agent -c` can
     # continue it if it is cut off or stopped
     from ..core import Agent
     from ..core.agent.run import console_renderer
     from ..session import SessionLog
-    from ..ui.common import (SESS_DIR, exit_status, folder_of, mark_message, new_session_path,
-                             stop_notice)
+    from ..ui.common import (SESS_DIR, exit_status, folder_of, hold_session, mark_message,
+                             new_session_path, stop_notice)
     goal = " ".join(args.task)
     print(f"Query: {goal}")
     print("-" * 40)
@@ -219,7 +276,11 @@ def main(argv=None):
     except (RuntimeError, ValueError) as e:      # e.g. an unknown LLM_BACKEND
         print(f"mini_agent: {e}", file=sys.stderr)
         return 2
-    log = SessionLog(new_session_path(SESS_DIR))
+    if args.keepalive_session:                   # the first run of --keep-alive: its session
+        log = SessionLog(args.keepalive_session)
+    else:
+        log = SessionLog(new_session_path(SESS_DIR))
+        hold_session(log.path)                   # a new session: nobody else can hold it
     mark_message(agent, log, log.append("user/message", content=goal,
                                         workspace=folder_of(agent))["seq"])
 

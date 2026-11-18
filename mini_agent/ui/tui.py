@@ -41,9 +41,9 @@ from ..core.agent.run import failed_call
 from ..core.policy import Approval, summarize_call
 from ..session import SessionLog
 from .common import (PLAN_GUIDANCE, SESS_DIR,  # noqa: F401 (also imported from here)
-                     compact_notice, folder_of, latest_session, new_session_path, provider_label,
-                     resume_state, mark_message, note_approval_now, session_conversation,
-                     shows_answer, stop_notice)
+                     compact_notice, folder_of, hold_session, latest_session, new_session_path,
+                     provider_label, resume_state, mark_message, note_approval_now,
+                     session_conversation, shows_answer, stop_notice)
 
 
 
@@ -399,6 +399,7 @@ class MiniAgentApp(App):
         self.pet = pets.choose_pet()
         self.plan_active = False
         self._splash: PetSplash | None = None
+        self.busy = ""        # why the session could not be opened (another process runs it)
 
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="stream")
@@ -465,10 +466,12 @@ class MiniAgentApp(App):
             options["approve"] = Approval("ask", ask=self._ask_approval)
         self.agent = Agent(use_memory=True, **options)
         latest = self._latest_session() if self.resume else None
-        if latest is not None:
-            self.session_log = SessionLog(latest)   # continue the same file
-        else:
-            self.session_log = SessionLog(new_session_path(SESS_DIR))
+        path = latest or new_session_path(SESS_DIR)   # the latest: continue the same file
+        self.busy = hold_session(path)                # one process per session
+        if self.busy:
+            self.exit()
+            return
+        self.session_log = SessionLog(path)
         model = getattr(self.agent.llm, "model", "?")
         bar = self.query_one(StatusBar)
         bar.pet = self.pet
