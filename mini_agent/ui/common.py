@@ -67,6 +67,20 @@ def exit_status(reason) -> int:
     return {"done": 0, "needs_approval": 3, "interrupted": 130}.get(reason, 1)
 
 
+EXIT_BUSY = 4     # the session is in use by another mini_agent process
+
+
+def hold_session(path) -> str:
+    """Lock the session log for this process until it ends (one process per session):
+    "" when held, else why not (another mini_agent process runs it)."""
+    from ..session_lock import SessionBusy, SessionLock
+    try:
+        SessionLock(path).acquire()
+        return ""
+    except SessionBusy as e:
+        return str(e)
+
+
 def session_conversation(agent, log, plain_text, until_seq=None) -> str:
     """The earlier conversation of the session for the next task: with a lifecycle, within
     its token budget (summarised by the model only when pruning is not enough); without

@@ -7,7 +7,9 @@ The rendering model:
 """
 from __future__ import annotations
 
+import sys
 import time
+from pathlib import Path
 
 from rich.console import Console
 from rich.live import Live
@@ -20,10 +22,10 @@ from ..core.policy import Approval, NeedsApproval, summarize_call
 from ..terminal import stdin_is_terminal
 from ..session import SessionLog
 from . import pets, theme
-from .common import (PLAN_GUIDANCE, SESS_DIR, compact_notice, exit_status, folder_of,
-                     latest_session, mark_message, new_session_path, note_approval_now,
-                     provider_label, resume_state, session_conversation, shows_answer,
-                     stop_notice)
+from .common import (EXIT_BUSY, PLAN_GUIDANCE, SESS_DIR, compact_notice, exit_status, folder_of,
+                     hold_session, latest_session, mark_message, new_session_path,
+                     note_approval_now, provider_label, resume_state, session_conversation,
+                     shows_answer, stop_notice)
 
 SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -144,12 +146,16 @@ def _rebuild(console, log):
 ANSWERS = {"y": "yes", "yes": "yes", "a": "always", "always": "always"}
 
 
-def run_repl(resume: bool = False, agent_options: dict | None = None) -> int:
+def run_repl(resume: bool = False, agent_options: dict | None = None,
+             session: str | Path | None = None, once: bool = False) -> int:
     """The plain terminal mode. resume (-c): continue the latest session of the agent's
     folder (with no terminal: its latest unfinished task, then exit with that task's
-    status, like a one-shot task). Returns the exit status."""
+    status, like a one-shot task). Returns the exit status.
+    session, once (a run of `--keep-alive`, whose supervisor holds the session's lock):
+    continue the unfinished task of this session, then exit with its status."""
     console = Console()
     terminal = stdin_is_terminal()
+    once = once or (resume and not terminal)       # continue one task, then exit: no prompt
     live_now = []          # the Live display of the running turn, paused while asking
 
     def ask(action: str, args: dict) -> str:
@@ -175,15 +181,24 @@ def run_repl(resume: bool = False, agent_options: dict | None = None) -> int:
         options["approve"] = Approval("ask", ask=ask)
     agent = Agent(use_memory=True, **options)
     folder = folder_of(agent)
-    latest = latest_session(SESS_DIR, workspace=folder, unfinished=not terminal) if resume else None
-    if resume and latest is None and not terminal:
-        return 2                          # the command line says why (nothing_to_continue)
-    log = SessionLog(latest or new_session_path(SESS_DIR))
+    if session is not None:
+        latest = Path(session)
+    else:
+        latest = latest_session(SESS_DIR, workspace=folder, unfinished=once) if resume else None
+        if resume and latest is None and once:
+            return 2                      # the command line says why (nothing_to_continue)
+    path = latest or new_session_path(SESS_DIR)
+    if session is None:
+        busy = hold_session(path)         # one process per session
+        if busy:
+            print(busy, file=sys.stderr)
+            return EXIT_BUSY
+    log = SessionLog(path)
     pet = pets.choose_pet()
     plan_active = False
 
     if latest is not None:
-        if terminal:                      # the history; with no terminal, just the task
+        if terminal and not once:         # the history; continuing once, just the task
             _rebuild(console, log)
         for ev in log.events():
             if ev["type"] == "plan/mode":
@@ -296,10 +311,11 @@ def run_repl(resume: bool = False, agent_options: dict | None = None) -> int:
             if state is None:                 # its message is logged; record it in user.md once
                 mark_message(agent, log, unfinished.get("message_seq"))
             reason = run_turn(unfinished["goal"], conversation, state=state)
-            if not terminal:                  # like a one-shot task: no prompt, its status
+            if once:                          # like a one-shot task: no prompt, its status
                 return exit_status(reason)
-    if not terminal and resume:
-        return 2                              # nothing unfinished here (the command line said so)
+    if once:
+        # nothing unfinished: the command line said so (2); a --keep-alive run has nothing left (0)
+        return 0 if session is not None else 2
 
     while True:
         try:

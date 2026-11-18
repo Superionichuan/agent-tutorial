@@ -20,6 +20,8 @@ Event taxonomy:
     compaction/summary   compaction checkpoint (summary replaces older history)
     plan/mode            plan-mode flag (log-only state, folded on resume)
     todo/write           todo list snapshot (whole-list replace)
+    keepalive/continue   `--keep-alive` continues the task after a passing failure
+    keepalive/stop       `--keep-alive` stops (it gave up, or was asked to stop)
 
 Usage:
     log = SessionLog("run1.jsonl")
@@ -137,8 +139,10 @@ class SessionLog:
 
     # ---------- projection: the turn that did not finish ----------
 
-    # events that may sit between a user message and the turn it opens (not conversation)
-    BETWEEN = ("plan/mode", "todo/write", "compaction/summary")
+    # events that may sit between a user message and the turn it opens (not conversation);
+    # keepalive/* are written by `mini_agent --keep-alive` between two runs of a task
+    BETWEEN = ("plan/mode", "todo/write", "compaction/summary", "keepalive/continue",
+               "keepalive/stop")
 
     def unfinished_turn(self) -> dict | None:
         """The last turn, when it did not end with "done": cut off (no turn/end, the

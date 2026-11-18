@@ -133,8 +133,86 @@ the latest unfinished task.
 Exit status of `mini_agent "task"`: 0 the agent finished (its answer says whether it
 managed); 1 stopped before the end (token budget, step limit, a model error, a task the
 offline demo has no recording of, ...); 3 a risky call needs approval and there was no
-terminal to ask; 2 a usage or set-up error, or nothing for `-c` to continue here; 130
-interrupted. After 1, 3 or 130, `mini_agent -c` in the same folder continues the task.
+terminal to ask; 2 a usage or set-up error, or nothing for `-c` to continue here; 4 the
+session is in use by another mini_agent process; 130 interrupted. After 1, 3 or 130,
+`mini_agent -c` in the same folder continues the task.
+
+### Keep a long task going
+
+```bash
+mini_agent --keep-alive --yes "the task"     # or, for an unfinished task here: mini_agent -c --keep-alive --yes
+```
+
+With `--keep-alive`, a passing failure does not end the task: when the provider is down
+or cannot be reached (a network error, a timeout, HTTP 408, 429 or 5xx), or the process
+is killed (out of memory, `kill -9`), it waits and continues the same task with `-c`. The
+waits grow: 30 s, then 1, 2, 4 and 8 minutes, then every 10 minutes. Each continue prints
+one line and is written to the session log. A stop that waiting will not change ends it
+at once, with that stop's exit status: the task is done, a risky call needs approval, the
+token budget or the step limit is reached, a wrong key, no credit or an unknown model
+(HTTP 4xx), or you press Ctrl+C.
+
+All the continues share the task's `--budget`. `--keep-alive N` gives up after N
+continues in a row that complete no step (default 5) and exits with status 75 ("try
+again later"); a continue that completes a step starts the count again.
+`mini_agent -c --keep-alive` in a folder with nothing unfinished prints one line and exits
+0, so it is harmless to run at every login.
+
+`-c` does not remember the options of the earlier run: repeat `--yes`, `--budget` and the
+rest. Without a terminal nobody can approve a risky call, so without `--yes` the first one
+stops the task with exit status 3; add `--yes` (or `--approve deny`) if the task may run
+shell commands, Python or file writes unattended.
+
+To start `mini_agent -c --keep-alive` again after the computer restarts, use the system's
+own tools. Use the full path of `mini_agent` (`which mini_agent` on macOS and Linux,
+`where mini_agent` on Windows): these tools do not read your shell's settings. The key is
+not needed there; the settings saved by `mini_agent setup` are used.
+
+macOS (tested on macOS 15): save as `~/Library/LaunchAgents/org.miniagent.continue.plist`,
+with your paths. It runs at every login; `launchctl bootstrap gui/$(id -u)
+~/Library/LaunchAgents/org.miniagent.continue.plist` also starts it now, and `plutil -lint`
+checks the file. To remove it: `launchctl bootout gui/$(id -u)/org.miniagent.continue`,
+then delete the file.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>org.miniagent.continue</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOU/.local/bin/mini_agent</string>
+    <string>-c</string>
+    <string>--keep-alive</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/YOU/my-project</string>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/YOU/my-project/.mini_agent/launchd.log</string>
+  <key>StandardErrorPath</key><string>/Users/YOU/my-project/.mini_agent/launchd.log</string>
+</dict>
+</plist>
+```
+
+Linux with systemd (tested on Ubuntu 24.04): save as
+`~/.config/systemd/user/mini_agent-continue.service`, with your paths, then run
+`systemctl --user daemon-reload` and `systemctl --user enable --now mini_agent-continue`.
+It starts now and at every login; `journalctl --user -u mini_agent-continue` shows its
+output. To remove it: `systemctl --user disable --now mini_agent-continue`, delete the file
+and run `systemctl --user daemon-reload` again.
+
+```ini
+[Unit]
+Description=Continue the unfinished mini_agent task in my-project
+
+[Service]
+WorkingDirectory=/home/YOU/my-project
+ExecStart=/home/YOU/.local/bin/mini_agent -c --keep-alive
+
+[Install]
+WantedBy=default.target
+```
+
 
 ### Your own tool
 
@@ -188,7 +266,8 @@ installs it into any Python 3.10 or newer (it needs git).
 - `~/.mini_agent/memory/`: notes the agent saves with `remember`, and a short daily log;
 - `~/.mini_agent/skills/`: skills you add;
 - `~/.mini_agent/sessions/`: one log per task or interactive session, with every message,
-  step, tool result and answer; `mini_agent -c` reads them;
+  step, tool result and answer; `mini_agent -c` reads them. While a session runs, a
+  `.lock` file next to its log keeps a second mini_agent off it;
 - `.mini_agent/` in each folder the agent worked in: `user.md` and `handoff.md`.
 
 On Windows, `~` is `C:\Users\<name>`. `uv tool uninstall mini_agent` removes the program
