@@ -135,14 +135,18 @@ def run_tool(argv: list, timeout: float) -> Tuple[bytes, bytes]:
                             stderr=subprocess.PIPE, cwd=cwd(), env=utf8_env(), **group)
     try:
         return proc.communicate(timeout=timeout)
-    except BaseException:
-        stop_tree(proc)
+    except BaseException as cause:
+        late_stop = stop_tree(proc)
+        if late_stop is not None and not isinstance(cause, KeyboardInterrupt):
+            raise late_stop        # a stop that came while the timed-out command was cleaned up
         raise
 
 
-def stop_tree(proc: subprocess.Popen) -> None:
+def stop_tree(proc: subprocess.Popen) -> Optional[KeyboardInterrupt]:
     """Stop a tool's command and what it started (its process group; on Windows its process
-    tree), then reap it."""
+    tree), then reap it. A stop (Ctrl+C or a stop signal) that comes while waiting for the
+    command's pipes to close is returned, so that the caller can raise it once the command is
+    gone."""
     if WINDOWS:          # before the parent dies: taskkill /T follows the parent links
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -158,8 +162,11 @@ def stop_tree(proc: subprocess.Popen) -> None:
         pass
     try:
         proc.communicate(timeout=5)      # the pipes close once the processes are gone
+    except KeyboardInterrupt as stop:    # StopSignal included
+        return stop
     except BaseException:
         pass
+    return None
 
 
 def bash(cmd: str) -> str:
