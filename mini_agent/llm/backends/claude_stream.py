@@ -79,8 +79,14 @@ def stream_claude(api_key: str, model: str, prompt: str, timeout: int = 120, max
                             return content, input_tokens, output_tokens, error_text(resp.status_code, text)
                         wait = retry.wait_before(attempt, resp, waits)
                     else:
+                        seen, other = False, []      # other: text that is not part of a stream
                         for line in resp.iter_lines():
-                            if not line or not line.startswith("data: "):
+                            if not line:
+                                continue
+                            if not line.startswith("data: "):
+                                if not line.startswith(("event:", ":", "id:", "retry:")) \
+                                        and sum(map(len, other)) < 200:
+                                    other.append(line.strip())
                                 continue
                             data = line[6:]
                             if data == "[DONE]":
@@ -91,6 +97,7 @@ def stream_claude(api_key: str, model: str, prompt: str, timeout: int = 120, max
                                 continue
                             if not isinstance(event, dict):
                                 continue
+                            seen = True
                             event_type = event.get("type")
 
                             if event_type == "content_block_delta":
@@ -110,6 +117,12 @@ def stream_claude(api_key: str, model: str, prompt: str, timeout: int = 120, max
                                 print(shown.flush())
                                 return content, input_tokens, output_tokens, \
                                     error_text(200, json.dumps(event))
+                        if not seen:     # a 200 that is no stream: a proxy's or a portal's page
+                            print(shown.flush())
+                            text = " ".join(other)[:200]
+                            return content, input_tokens, output_tokens, (
+                                f"Error: the server did not send a stream: {text}" if text
+                                else "Error: the server sent an empty reply")
                         break
             except httpx.TimeoutException:
                 if last or content:          # text was already shown: do not repeat it
