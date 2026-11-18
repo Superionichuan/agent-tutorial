@@ -278,6 +278,58 @@ def children(pid):
     return [int(x) for x in out.split()]
 
 
+def group_rows(pgid):
+    """`ps` rows of the process group and of every process started from it."""
+    out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,pgid=,stat=,etime=,command="],
+                         capture_output=True, text=True).stdout
+    rows = {}
+    for line in out.splitlines():
+        parts = line.split(None, 5)
+        if len(parts) == 6 and parts[0].isdigit():
+            rows[int(parts[0])] = (int(parts[1]), int(parts[2]), line.strip())
+    keep = {pid for pid, (_, group, _) in rows.items() if group == pgid}
+    grew = True
+    while grew:                                   # children that left the group
+        more = {pid for pid, (parent, _, _) in rows.items() if parent in keep} - keep
+        keep |= more
+        grew = bool(more)
+    return [rows[pid][2] for pid in sorted(keep)], sorted(keep)
+
+
+def wait_or_explain(s, proc, timeout):
+    """proc.wait(timeout). If it does not exit, report what is stuck, then end it and fail:
+    the `ps` rows of its process group, the Python stacks of every process in it (the test
+    starts them with PYTHONFAULTHANDLER=1, so SIGABRT makes each print its stacks to stderr),
+    and the end of the supervisor's and the run's stderr. POSIX only."""
+    try:
+        return proc.wait(timeout)
+    except subprocess.TimeoutExpired:
+        pass
+    rows, pids = group_rows(proc.pid)
+    before = len(s.stderr(proc))
+    for pid in pids:                              # one at a time: their stacks stay apart
+        try:
+            os.kill(pid, signal.SIGABRT)
+        except OSError:
+            pass
+        time.sleep(0.7)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        proc.wait(10)
+    except subprocess.TimeoutExpired:
+        pass
+    err = s.stderr(proc)
+    stacks = err[before:].strip()
+    pytest.fail(f"mini_agent did not exit within {timeout} s.\n"
+                f"ps (pid ppid pgid stat etime command):\n" + "\n".join(rows) + "\n"
+                f"Python stacks after SIGABRT:\n{stacks[:3500]}\n"
+                f"stderr before that (end):\n{err[:before][-1200:]}", pytrace=False)
+
+
 def hard_kill(pid):
     """kill -9 (taskkill /F on Windows): no handler runs, nothing is cleaned up."""
     if WINDOWS:
@@ -355,11 +407,13 @@ def test_a_signal_during_a_wait_stops_at_once_and_never_continues(make, sig):
 def test_ctrl_c_during_a_run_stops_and_never_continues(make):
     hold = threading.Event()
     s = make(in_order(hold, then=done("too late")))
-    proc = s.start("--keep-alive", "Compute 6*7.")
+    proc = s.start("--keep-alive", "Compute 6*7.", PYTHONFAULTHANDLER="1")
     wait_until(lambda: s.server.count() == 1, what="the first request")
     os.killpg(proc.pid, signal.SIGINT)                        # Ctrl+C reaches the whole group
-    proc.wait(30)
-    hold.set()
+    try:
+        wait_or_explain(s, proc, 30)
+    finally:
+        hold.set()
     assert proc.returncode == 130, s.stderr(proc)
     time.sleep(1.5)
     assert s.server.count() == 1
@@ -370,11 +424,15 @@ def test_ctrl_c_during_a_run_stops_and_never_continues(make):
 def test_sigterm_to_the_supervisor_during_a_run_stops_the_run_too(make):
     hold = threading.Event()
     s = make(in_order(hold, then=done("too late")))
-    proc = s.start("--keep-alive", "Compute 6*7.")
+    proc = s.start("--keep-alive", "Compute 6*7.", PYTHONFAULTHANDLER="1")
     wait_until(lambda: s.server.count() == 1, what="the first request")
     child = wait_until(lambda: children(proc.pid), what="the run's process")[0]
     os.kill(proc.pid, signal.SIGTERM)
-    proc.wait(30)
+    try:
+        wait_or_explain(s, proc, 30)
+    except BaseException:
+        hold.set()
+        raise
     assert proc.returncode == 143, s.stderr(proc)
     wait_until(lambda: not alive(child), timeout=10, what="the run to stop with its supervisor")
     hold.set()
