@@ -260,12 +260,9 @@ def test_other_error_output_is_unchanged():
 
 
 def test_powershell_output_without_progress_noise(monkeypatch):
-    class Done:
-        stdout = "สวัสดี\r\n".encode("utf-8")
-        stderr = PS_PROGRESS.encode("utf-8")
-
+    done = ("สวัสดี\r\n".encode("utf-8"), PS_PROGRESS.encode("utf-8"))   # stdout, stderr
     monkeypatch.setenv("MINI_AGENT_SHELL", "powershell")
-    monkeypatch.setattr(shell_mod.subprocess, "run", lambda *a, **k: Done())
+    monkeypatch.setattr(shell_mod, "run_tool", lambda argv, timeout: done)
     assert shell_mod.bash('Write-Output "สวัสดี"') == "สวัสดี\r\n"
 
 

@@ -122,12 +122,51 @@ def decode(data: bytes) -> str:
     return (data or b"").decode("utf-8", errors="replace")
 
 
+def run_tool(argv: list, timeout: float) -> Tuple[bytes, bytes]:
+    """Run a tool's command in the agent's folder and return (stdout, stderr).
+
+    The command gets no terminal input and a process group of its own. When the wait ends
+    early (the timeout, Ctrl+C, a stop signal), the command is stopped together with every
+    process it started, and the exception goes on (subprocess.TimeoutExpired for the timeout).
+    """
+    group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS
+             else {"start_new_session": True})
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, cwd=cwd(), env=utf8_env(), **group)
+    try:
+        return proc.communicate(timeout=timeout)
+    except BaseException:
+        stop_tree(proc)
+        raise
+
+
+def stop_tree(proc: subprocess.Popen) -> None:
+    """Stop a tool's command and what it started (its process group; on Windows its process
+    tree), then reap it."""
+    if WINDOWS:          # before the parent dies: taskkill /T follows the parent links
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        import signal
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    try:
+        proc.communicate(timeout=5)      # the pipes close once the processes are gone
+    except BaseException:
+        pass
+
+
 def bash(cmd: str) -> str:
     """Run a shell command (bash; on Windows Git Bash, or PowerShell when Git Bash is missing)"""
     try:
-        result = subprocess.run(command_line(cmd), capture_output=True, timeout=TIMEOUT,
-                                cwd=cwd(), env=utf8_env())
-        output = decode(result.stdout) + from_clixml(decode(result.stderr))
+        stdout, stderr = run_tool(command_line(cmd), TIMEOUT)
+        output = decode(stdout) + from_clixml(decode(stderr))
         return output if output else "OK"
     except subprocess.TimeoutExpired:
         return "Error: timeout"
