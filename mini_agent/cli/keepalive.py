@@ -199,17 +199,22 @@ def child_argv(args, session: Path, budget_left: int, first: bool) -> List[str]:
     return argv + (["--", *args.task] if first else ["-c"])
 
 
+END_WAITS = (3.0, 10.0, 5.0)      # seconds: before passing the stop on, after it, after the kill
+
+
 def _end(proc: subprocess.Popen, signum: int) -> None:
     """Stop the running child. It usually got the same signal already (a terminal's Ctrl+C or a
     service stop reaches the whole process group): give it a moment, then pass the signal on,
-    then end it."""
+    then end it. Every wait is bounded: after the kill it waits END_WAITS[2] s at most, then
+    says so and returns, so the supervisor always exits."""
     for s in ASKED_TO_STOP:
         try:
             signal.signal(s, signal.SIG_IGN)
         except (OSError, ValueError):
             pass
+    first, second, last = END_WAITS
     try:
-        proc.wait(timeout=3)
+        proc.wait(timeout=first)
         return
     except subprocess.TimeoutExpired:
         pass
@@ -218,16 +223,44 @@ def _end(proc: subprocess.Popen, signum: int) -> None:
             proc.terminate()
         else:
             proc.send_signal(signum)
-        proc.wait(timeout=10)
+        proc.wait(timeout=second)
     except subprocess.TimeoutExpired:
         proc.kill()
-        proc.wait()
+        try:
+            proc.wait(timeout=last)
+        except subprocess.TimeoutExpired:
+            say(f"the run (process {proc.pid}) was killed but has not been reaped; "
+                "not waiting for it any longer.")
+
+
+def _poll_shielded(proc: subprocess.Popen) -> Optional[int]:
+    """proc.poll() with the stop signals held back (POSIX).
+
+    CPython's Popen takes an internal lock in poll() and wait() and releases it in a finally
+    block; a stop raised between taking the lock and entering that block leaves the lock held,
+    and every later wait on the process then blocks or times out (seen on macOS CI: the
+    supervisor hung in _end's last wait with its run already a zombie). Here a stop that comes
+    during poll() stays pending until the mask is restored. signal.pthread_sigmask runs the
+    Python handler before it returns, so the KeyboardInterrupt or Stopped starts at that call,
+    in this function, with Popen's lock released. Only poll() is covered: the run is started
+    with the signals unblocked, so it does not inherit a blocked mask. The supervisor has one
+    thread, so a stop sent to the process (Ctrl+C to the group, kill) is held back too."""
+    old = signal.pthread_sigmask(signal.SIG_BLOCK, ASKED_TO_STOP)
+    try:
+        return proc.poll()
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, old)
+
+
+SHIELD = hasattr(signal, "pthread_sigmask") and os.name != "nt"
+POLL_EVERY = 0.2                   # seconds between checks on the running child (POSIX)
 
 
 def _run(argv: List[str], lock: SessionLock) -> int:
     """Run one child and return its exit status (negative: the signal that ended it). A stop
     that comes while the child is being started is held until its process is known, then the
-    child is stopped too."""
+    child is stopped too. On POSIX a stop is taken in this function's own sleep or when the
+    mask is restored after poll, never inside Popen (see _poll_shielded)."""
     global _spawning
     keep = {"pass_fds": (lock.fd,)} if os.name != "nt" and lock.fd is not None else {}
     env = dict(os.environ, **{TOKEN_ENV: lock.token})    # its way into the session we hold
@@ -243,7 +276,13 @@ def _run(argv: List[str], lock: SessionLock) -> int:
             _held.clear()
             raise KeyboardInterrupt() if signum == signal.SIGINT else Stopped(signum)
         while True:
-            try:
+            if SHIELD:
+                status = _poll_shielded(proc)
+                if status is not None:
+                    return status
+                time.sleep(POLL_EVERY)
+                continue
+            try:                                  # Windows: its wait takes no such lock
                 return proc.wait(timeout=1)       # short waits: Ctrl+C is seen on Windows too
             except subprocess.TimeoutExpired:
                 continue
