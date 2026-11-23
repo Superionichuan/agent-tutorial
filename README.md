@@ -5,6 +5,12 @@
 Hands-on Workshop on AI Agents as Scientific Research Assistants
 Nanyang Technological University · Supported by Schmidt Sciences
 
+> mini_agent now lives in its own repository,
+> [Superionichuan/mini_agent](https://github.com/Superionichuan/mini_agent) (version 2.0.0,
+> with a one-line install for macOS, Linux and Windows). This repository keeps the AgentForge
+> tutorials and the development history; the notebooks here install mini_agent 1.2.2, the
+> version used in the workshop.
+
 ## Run in Google Colab
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Superionichuan/agent-tutorial/blob/main/notebooks/agent_tutorial_colab.ipynb)
