@@ -37,3 +37,7 @@ minimal modules, one concern per module. Sections cover the language model,
 tools, the ReAct loop, the event log, task state, memory, skills, prompt
 profiles, and the harness. Optional appendices cover failure modes and
 evaluation, safety, and offline mode.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
