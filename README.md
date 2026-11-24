@@ -9,7 +9,8 @@ Nanyang Technological University · Supported by Schmidt Sciences
 > [Superionichuan/mini_agent](https://github.com/Superionichuan/mini_agent) (version 2.0.0,
 > with a one-line install for macOS, Linux and Windows). This repository keeps the AgentForge
 > tutorials and the development history; the notebooks here install mini_agent 1.2.2, the
-> version used in the workshop.
+> version used in the workshop. Note that the 1.2.2 command line has no `--version` or `--help`:
+> anything typed after `mini_agent` is run as a task. For the full command line, use 2.0.0.
 
 ## Run in Google Colab
 
