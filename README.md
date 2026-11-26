@@ -59,7 +59,9 @@ jupyter lab notebooks/agent_tutorial.ipynb
 The tutorial dissects `mini_agent`, a complete working agent built from
 minimal modules, one concern per module. Sections cover the language model,
 tools, the ReAct loop, the event log, task state, memory, skills, prompt
-profiles, and the harness. Optional appendices cover failure modes and
+profiles, and the harness. The last section gives the agent a research task,
+fitting an equation of state to a data file, and checks the bulk modulus it
+reports with a rule in code. Optional appendices cover failure modes and
 evaluation, safety, and offline mode.
 
 ## License
