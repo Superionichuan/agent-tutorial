@@ -42,17 +42,47 @@ Colab runtime and is sent only to the provider you choose.
 
 ## Run locally
 
-With Python 3.10 or newer, preferably in a virtual environment:
+You need Python 3.10 or newer with `pip` and `venv`. On Ubuntu they come with
+`sudo apt install python3-pip python3-venv`:
 
 ```bash
 git clone https://github.com/Superionichuan/agent-tutorial.git
 cd agent-tutorial
+python3 -m venv .venv
+. .venv/bin/activate              # Windows: .venv\Scripts\activate
 python -m pip install "https://github.com/Superionichuan/mini_agent/releases/download/v2.0.0/mini_agent-2.0.0-py3-none-any.whl" pandas jupyterlab
-mini_agent setup          # choose a provider and paste your key, or choose offline
+```
+
+Without administrator rights, or without `pip` and `venv`, use
+[uv](https://docs.astral.sh/uv/getting-started/installation/) instead; it downloads Python
+if needed:
+
+```bash
+git clone https://github.com/Superionichuan/agent-tutorial.git
+cd agent-tutorial
+uv venv --python 3.12 .venv
+. .venv/bin/activate              # Windows: .venv\Scripts\activate
+uv pip install "https://github.com/Superionichuan/mini_agent/releases/download/v2.0.0/mini_agent-2.0.0-py3-none-any.whl" pandas jupyterlab
+```
+
+Then choose a model. Run one of these lines on its own, not pasted together with other
+lines, because `mini_agent setup` reads your answers from the terminal:
+
+```bash
+mini_agent setup --provider offline   # no key: the tutorial's recorded runs
+mini_agent setup                      # a provider and your own key
+```
+
+Check the install (it prints 2187), then open the notebook:
+
+```bash
+mini_agent --backend offline "Compute 3**7."
 jupyter lab notebooks/agent_tutorial.ipynb
 ```
 
 `mini_agent setup` saves your choice in `~/.mini_agent/config.env`; run it again to change it.
+Start the command line as `mini_agent`, not as `python -m mini_agent` from this folder: the
+`mini_agent/` folder here holds the 1.2.2 source, and Python would run that instead.
 
 ## Contents
 
