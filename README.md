@@ -8,28 +8,50 @@ Nanyang Technological University · Supported by Schmidt Sciences
 > mini_agent now lives in its own repository,
 > [Superionichuan/mini_agent](https://github.com/Superionichuan/mini_agent) (version 2.0.0,
 > with a one-line install for macOS, Linux and Windows). This repository keeps the AgentForge
-> tutorials and the development history; the notebooks here install mini_agent 1.2.2, the
-> version used in the workshop. Note that the 1.2.2 command line has no `--version` or `--help`:
-> anything typed after `mini_agent` is run as a task. For the full command line, use 2.0.0.
+> tutorials and the development history. The Tutorial 1 notebook installs mini_agent 2.0.0.
+> The Tutorial 2 notebook (`tutorial2/`) installs 1.2.2, the version used in the workshop;
+> the 1.2.2 command line has no `--version` or `--help`: anything typed after `mini_agent` is
+> run as a task.
+
+## Two ways in
+
+This notebook takes a working agent apart: what the model sees, how a reply becomes a tool
+call, the event log, task state, memory, skills, sessions, approval, and evaluation, using the
+small `mini_agent` package. It assumes no earlier agent code: section 1 begins with a single
+model call.
+
+The workshop's other Tutorial 1 notebook,
+[What is an agent?](https://colab.research.google.com/github/AgentForgeWorkshop/Tutorials/blob/main/Tutorial1_frameworks/01a_what_is_an_agent.ipynb)
+([folder](https://github.com/AgentForgeWorkshop/Tutorials/tree/main/Tutorial1_frameworks)),
+builds the loop itself step by step (a model call, tools as functions, the loop, guardrails)
+and then the same agent in LangChain and LangGraph. The two notebooks cover different ground
+and can be done in either order. If you have never written an agent loop, that notebook is a
+good place to start.
 
 ## Run in Google Colab
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Superionichuan/agent-tutorial/blob/main/notebooks/agent_tutorial_colab.ipynb)
 
-No installation required. The first cell installs the package and asks for
-your own API key (DeepSeek, Qwen, or Claude). The key stays in your Colab
-runtime and is sent only to the provider you select. Without a key, choose
-`offline`: every cell then runs from a recorded run of the notebook.
+No installation required. The setup cell installs mini_agent 2.0.0. With the default
+`offline`, every cell runs from a recorded run of the notebook, without a key. To use a live
+model, choose a provider in the setup cell and paste your own API key (DeepSeek, Qwen, or
+Claude), or paste an [OpenRouter](https://openrouter.ai) key into the cell after it, which
+also lets you choose the model. The *Try it* exercises need a live model. A key stays in your
+Colab runtime and is sent only to the provider you choose.
 
 ## Run locally
+
+With Python 3.10 or newer, preferably in a virtual environment:
 
 ```bash
 git clone https://github.com/Superionichuan/agent-tutorial.git
 cd agent-tutorial
-pip install -e . pandas jupyterlab   # pandas for the tables, JupyterLab to open the notebook
-cp .env.example .env      # then edit .env with your key, or set LLM_BACKEND=offline
+python -m pip install "https://github.com/Superionichuan/mini_agent/releases/download/v2.0.0/mini_agent-2.0.0-py3-none-any.whl" pandas jupyterlab
+mini_agent setup          # choose a provider and paste your key, or choose offline
 jupyter lab notebooks/agent_tutorial.ipynb
 ```
+
+`mini_agent setup` saves your choice in `~/.mini_agent/config.env`; run it again to change it.
 
 ## Contents
 
