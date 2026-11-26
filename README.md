@@ -41,8 +41,10 @@ and the first full run, a few cells further down, ends with the PV energy, about
 ## Run locally
 
 You need Python 3.10 or newer with `pip` and `venv`. On Ubuntu they come with
-`sudo apt install python3-pip python3-venv`. The local notebook has been checked on Linux; on
-Windows, Colab is the checked route. To run it on Windows anyway, write `py -3 -m venv .venv`
+`sudo apt install python3-pip python3-venv`. On macOS, if `python3 --version` shows 3.9
+(Apple's own Python), install a newer Python from [python.org](https://www.python.org/downloads/)
+or Homebrew, or use the uv steps below. The local notebook has been checked on Linux and
+macOS; on Windows, Colab is the checked route. To run it on Windows anyway, write `py -3 -m venv .venv`
 for the third line, and activate with `.venv\Scripts\Activate.ps1` (PowerShell) or
 `.venv\Scripts\activate.bat` (Command Prompt):
 
