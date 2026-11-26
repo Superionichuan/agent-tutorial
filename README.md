@@ -11,7 +11,8 @@ Nanyang Technological University · Supported by Schmidt Sciences
 > tutorials and the development history. The Tutorial 1 notebook installs mini_agent 2.0.0.
 > The Tutorial 2 notebook (`tutorial2/`) installs 1.2.2, the version used in the workshop;
 > the 1.2.2 command line has no `--version` or `--help`: anything typed after `mini_agent` is
-> run as a task.
+> run as a task. The `mini_agent/` folder here is the 1.2.2 source; Tutorial 1 quotes the
+> 2.0.0 source in the mini_agent repository.
 
 ## Two ways in
 
@@ -25,8 +26,8 @@ The workshop's other Tutorial 1 notebook,
 ([folder](https://github.com/AgentForgeWorkshop/Tutorials/tree/main/Tutorial1_frameworks)),
 builds the loop itself step by step (a model call, tools as functions, the loop, guardrails)
 and then the same agent in LangChain and LangGraph. The two notebooks cover different ground
-and can be done in either order. If you have never written an agent loop, that notebook is a
-good place to start.
+and can be done in either order. If you would like to write a loop yourself before taking a
+complete one apart, start with that notebook.
 
 ## Run in Google Colab
 
